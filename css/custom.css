@@ -1,0 +1,40 @@
+/* DailyMed - Theme variables (match spec) */
+:root {
+  --primary: #9482bd;
+  --secondary: #82b7d5;
+  --background: #ffffff;
+  --surface: #ffffff;
+  --on-primary: #ffffff;
+  --on-secondary: #ffffff;
+  --on-surface: #000000;
+  --on-surface-variant: #6b7280;
+  --outline: #d1d5db;
+  --error: #d32f2f;
+  --primary-container: #e8e0f5;
+  --secondary-container: #d1e7f0;
+  --interaction-grave: #d32f2f;
+  --interaction-ligeira: #f9a825;
+  --interaction-moderada: #2e7d32;
+}
+
+.dark {
+  --background: #1a1a1a;
+  --surface: #2d2d2d;
+  --on-surface: #ffffff;
+  --on-surface-variant: #9ca3af;
+  --outline: #4b5563;
+  --primary-container: #3d3552;
+  --secondary-container: #2a3d47;
+}
+
+body { font-family: system-ui, -apple-system, sans-serif; }
+.card-round { border-radius: 14px; }
+.btn-round { border-radius: 10px; }
+.input-outline { border: 1px solid var(--outline); border-radius: 8px; }
+
+/* Autocomplete dropdown */
+.autocomplete-list { max-height: 240px; overflow-y: auto; }
+.autocomplete-list li:hover { background: var(--primary-container); }
+
+/* Travel checklist strikethrough */
+.checklist-item.done { text-decoration: line-through; color: var(--on-surface-variant); }

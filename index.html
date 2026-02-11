@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DailyMed</title>
+  <!-- Para produção, instale Tailwind via PostCSS/CLI (ver https://tailwindcss.com/docs/installation). CDN apenas para desenvolvimento. -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#9482bd',
+            secondary: '#82b7d5',
+            'primary-container': '#e8e0f5',
+            'secondary-container': '#d1e7f0',
+            'on-primary': '#ffffff',
+            'on-secondary': '#ffffff',
+            'interaction-grave': '#d32f2f',
+            'interaction-ligeira': '#f9a825',
+            'interaction-moderada': '#2e7d32',
+          },
+        },
+      },
+    };
+  </script>
+  <link rel="stylesheet" href="css/custom.css" />
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet" />
+</head>
+<body class="bg-white text-black min-h-screen pb-20" id="body-theme">
+  <script>
+    try {
+      var s = localStorage.getItem('dailymed_settings');
+      if (s) { var j = JSON.parse(s); document.body.classList.toggle('dark', j.theme === 'dark'); }
+    } catch (e) {}
+  </script>
+  <div id="app" class="max-w-lg mx-auto min-h-screen"></div>
+
+  <!-- Bottom navigation (apenas ícones) -->
+  <nav class="fixed bottom-0 left-0 right-0 max-w-lg mx-auto bg-white border-t border-gray-200 shadow-[0_-2px_10px_rgba(0,0,0,0.06)] flex justify-around items-center py-3 safe-area-pb z-50" id="bottom-nav">
+    <a href="#home" class="nav-link flex items-center justify-center text-primary p-2 rounded-lg" data-route="home" aria-label="Home">
+      <span class="material-icons text-2xl">home</span>
+    </a>
+    <a href="#medicacao" class="nav-link flex items-center justify-center text-gray-500 p-2 rounded-lg" data-route="medicacao" aria-label="Medicação">
+      <span class="material-icons text-2xl">medication</span>
+    </a>
+    <a href="#lembretes" class="nav-link flex items-center justify-center text-gray-500 p-2 rounded-lg" data-route="lembretes" aria-label="Lembretes">
+      <span class="material-icons text-2xl">notifications</span>
+    </a>
+    <a href="#reciclagem" class="nav-link flex items-center justify-center text-gray-500 p-2 rounded-lg" data-route="reciclagem" aria-label="Reciclagem">
+      <span class="material-icons text-2xl">recycling</span>
+    </a>
+    <a href="#dicas" class="nav-link flex items-center justify-center text-gray-500 p-2 rounded-lg" data-route="dicas" aria-label="Dicas">
+      <span class="material-icons text-2xl">menu_book</span>
+    </a>
+  </nav>
+
+  <script src="lista_infomed_data.js"></script>
+  <script src="js/storage.js"></script>
+  <script src="js/data.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

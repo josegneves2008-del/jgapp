@@ -1,0 +1,36 @@
+[
+  {
+    "id": "1",
+    "name": "Brufen 600",
+    "dosage": "600 mg",
+    "quantity": 30,
+    "expiryDate": "2025-12-31",
+    "manufacturer": "AbbVie",
+    "category": "Dores Musculares",
+    "isActive": true,
+    "isInStock": true,
+    "addedDate": "2024-01-10",
+    "notes": "Tomar de 8 em 8 horas",
+    "reminderTimes": ["08:00", "16:00"],
+    "dailyDosage": "1200 mg",
+    "substance": "Ibuprofeno",
+    "imageUri": null
+  },
+  {
+    "id": "2",
+    "name": "Lisinopril Generis",
+    "dosage": "10 mg",
+    "quantity": 28,
+    "expiryDate": "2025-06-15",
+    "manufacturer": "Generis",
+    "category": "Estômago",
+    "isActive": true,
+    "isInStock": true,
+    "addedDate": "2024-02-01",
+    "notes": "",
+    "reminderTimes": ["09:00"],
+    "dailyDosage": "10 mg",
+    "substance": "Lisinopril",
+    "imageUri": null
+  }
+]
