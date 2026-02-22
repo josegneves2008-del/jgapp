@@ -156,6 +156,43 @@ function getRemindersForToday() {
   });
 }
 
+function getNextPendingReminderForToday() {
+  const today = todayStr();
+  const now = new Date();
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const reminders = getRemindersForToday().filter(function (r) { return r.lastTakenDate !== today; });
+  let next = null;
+
+  reminders.forEach(function (r) {
+    const times = (r.times && r.times.length ? r.times : (r.time ? [r.time] : [])).filter(Boolean);
+    if (!times.length) return;
+    const minutes = times.map(function (t) {
+      const parts = String(t).split(':');
+      const hh = parseInt(parts[0], 10) || 0;
+      const mm = parseInt(parts[1], 10) || 0;
+      return { time: t, mins: hh * 60 + mm };
+    }).sort(function (a, b) { return a.mins - b.mins; });
+
+    let candidate = minutes.find(function (m) { return m.mins >= nowMinutes; });
+    let overdue = false;
+    if (!candidate) {
+      candidate = minutes[0];
+      overdue = true;
+    }
+    if (!candidate) return;
+    if (!next || candidate.mins < next.mins) {
+      next = {
+        reminder: r,
+        time: candidate.time,
+        mins: candidate.mins,
+        overdue: overdue,
+      };
+    }
+  });
+
+  return next;
+}
+
 function recyclingStats() {
   const deliveries = getRecyclingDeliveries();
   let totalPackages = 0, greenUnits = 0, points = 0;
@@ -214,6 +251,53 @@ function showToast(message, icon) {
     var el = document.getElementById('toast-reminder');
     if (el) el.remove();
   }, 5000);
+}
+
+function playSuccessChime() {
+  try {
+    var AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    var ctx = new AudioContext();
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = 660;
+    gain.gain.value = 0.0001;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    var now = ctx.currentTime;
+    if (ctx.state === 'suspended' && typeof ctx.resume === 'function') {
+      ctx.resume();
+    }
+    gain.gain.exponentialRampToValueAtTime(0.06, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
+    osc.start(now);
+    osc.stop(now + 0.3);
+    osc.onended = function () {
+      if (ctx && typeof ctx.close === 'function') ctx.close();
+    };
+  } catch (e) {}
+}
+
+function showSuccessFeedback(message) {
+  var text = message || 'Feito! Medicamento registado.';
+  var existing = document.getElementById('success-feedback');
+  if (existing) existing.remove();
+  var html = '<div id="success-feedback" class="success-feedback" role="status" aria-live="polite">' +
+    '<div class="success-feedback__card">' +
+    '<div class="success-feedback__icon"><span class="material-icons">check_circle</span></div>' +
+    '<div class="success-feedback__text">' + escapeHtml(text) + '</div>' +
+    '</div>' +
+    '</div>';
+  document.body.insertAdjacentHTML('beforeend', html);
+  setTimeout(function () {
+    var el = document.getElementById('success-feedback');
+    if (el) el.classList.add('success-feedback--hide');
+  }, 1200);
+  setTimeout(function () {
+    var el = document.getElementById('success-feedback');
+    if (el) el.remove();
+  }, 1600);
 }
 
 const ALERTS_KEY = 'dailymed_medication_alerts';
@@ -441,24 +525,30 @@ function viewHome() {
   const remindersToday = getRemindersForToday().length;
   const expiringSoon = meds.filter(function (m) { return getValidityStatus(m.expiryDate).type === 'soon'; }).length;
   const stockLow = meds.filter(function (m) { return (parseInt(m.quantity || 0, 10) || 0) <= 10; }).length;
+  const nextReminder = getNextPendingReminderForToday();
+  const nextMed = nextReminder ? getMedicationById(nextReminder.reminder.medicationId) : null;
+  const nextLabel = nextReminder
+    ? ('Próximo passo: ' + escapeHtml(nextMed ? (nextMed.name || 'Medicamento') : 'Medicamento') + (nextReminder.overdue ? ' agora' : (' às ' + nextReminder.time)))
+    : 'Próximo passo: Sem lembretes pendentes hoje';
   return '<header class="relative px-4 flex items-center justify-center gap-3 bg-white">' +
     '<img src="logo.png" alt="DailyMed" class="app-logo object-contain" />' +
     '<a href="#definicoes" class="header-action" aria-label="Definições"><span class="material-icons">settings</span></a>' +
     '</header>' +
     '<main class="app-main space-y-5 bg-white">' +
-    '<div class="grid grid-cols-1 gap-3">' +
-    '<a href="#lembretes" class="home-shortcut home-shortcut--secondary"><span class="material-icons text-2xl">schedule</span><span>Lembretes</span></a>' +
-    '<a href="#medicacao" class="home-shortcut home-shortcut--primary"><span class="material-icons text-2xl">medication</span><span>Armário</span></a>' +
-    '<a href="#reciclagem" class="home-shortcut home-shortcut--secondary"><span class="material-icons text-2xl">eco</span><span>Reciclar</span></a>' +
-    '<a href="#dicas" class="home-shortcut home-shortcut--primary"><span class="material-icons text-2xl">bookmark</span><span>Dicas</span></a>' +
-    '</div>' +
+    '<section class="next-step-card" aria-live="polite">' +
+    '<p class="next-step-text">' + nextLabel + '</p>' +
+    (nextReminder ? '<a href="#lembretes" class="next-step-cta">Ver lembretes</a>' : '') +
+    '</section>' +
     '<section class="space-y-2">' +
-    '<p class="section-label">Hoje</p>' +
-    '<div class="summary-card"><div><p class="summary-title">Lembretes do dia</p><p class="summary-sub">Total</p></div><div class="summary-value text-primary">' + remindersToday + '</div></div>' +
+    '<div class="grid grid-cols-1 gap-3">' +
+    '<a href="#lembretes" class="home-shortcut home-shortcut--primary"><span class="material-icons text-2xl">schedule</span><span>Lembretes</span></a>' +
+    '<a href="#medicacao" class="home-shortcut home-shortcut--secondary"><span class="material-icons text-2xl">medication</span><span>Armário</span></a>' +
+    '</div>' +
     '</section>' +
     '<section class="space-y-2">' +
     '<p class="section-label">Resumo</p>' +
     '<div class="space-y-3">' +
+    '<div class="summary-card"><div><p class="summary-title">Lembretes do dia</p><p class="summary-sub">Total</p></div><div class="summary-value text-primary">' + remindersToday + '</div></div>' +
     '<div class="summary-card"><div><p class="summary-title">Medicamentos ativos</p><p class="summary-sub">Total</p></div><div class="summary-value text-primary">' + activeCount + '</div></div>' +
     '<div class="summary-card"><div><p class="summary-title">Medicamentos a expirar</p><p class="summary-sub">Total</p></div><div class="summary-value text-secondary">' + expiringSoon + '</div></div>' +
     '</div>' +
@@ -476,6 +566,7 @@ function viewHome() {
 function viewMedicacaoCategorias() {
   let list = '';
   list = '<a href="#medicacao-armario" class="block w-full py-3 px-4 rounded-xl bg-primary-container text-black font-medium text-center shadow-sm">Ver todos</a>';
+  list += '<a href="#medicacao-armario?filter=ativos" class="block w-full py-3 px-4 rounded-xl bg-primary-container text-black font-medium text-center shadow-sm">Medicação Diária</a>';
   CATEGORIAS.forEach(function (c) {
     list += '<a href="#medicacao-armario?cat=' + encodeURIComponent(c) + '" class="block w-full py-3 px-4 rounded-xl bg-primary-container text-black font-medium text-center shadow-sm">' + c + '</a>';
   });
@@ -1554,6 +1645,8 @@ function afterRender(path, params) {
             notes: '',
           });
           r.lastTakenDate = today;
+          showSuccessFeedback('Feito! Medicamento registado.');
+          playSuccessChime();
         }
         saveReminder(r);
       }

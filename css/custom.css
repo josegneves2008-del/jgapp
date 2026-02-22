@@ -112,6 +112,97 @@ body { font-family: 'Manrope', system-ui, -apple-system, sans-serif; background:
   to { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
 
+/* Home: Next step focus */
+.next-step-card {
+  background: linear-gradient(135deg, #ecfdf3, #f0fdf4);
+  border: 2px solid #bbf7d0;
+  border-radius: 22px;
+  padding: 12px 16px;
+  box-shadow: var(--shadow-soft);
+}
+.next-step-label {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: #166534;
+  margin: 0 0 6px 0;
+  font-weight: 700;
+}
+.next-step-text {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: #14532d;
+  margin: 0;
+}
+.next-step-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 12px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: #16a34a;
+  color: #ffffff;
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow: var(--shadow-card-flat);
+}
+
+.home-shortcut--compact {
+  padding-top: 10px;
+  padding-bottom: 10px;
+  font-size: 0.95rem;
+}
+.home-secondary-footer {
+  margin-top: 4px;
+  padding: 6px 0 2px;
+  opacity: 0.92;
+}
+.home-secondary-footer .home-shortcut {
+  background: #f8fafc;
+  border-color: rgba(148, 163, 184, 0.4);
+}
+
+/* Success feedback for "Tomar Remédio" */
+.success-feedback {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.22);
+  z-index: 70;
+  animation: success-fade-in 0.15s ease-out;
+}
+.success-feedback__card {
+  background: #ecfdf3;
+  border: 1px solid #bbf7d0;
+  color: #14532d;
+  border-radius: 24px;
+  padding: 20px 26px;
+  text-align: center;
+  min-width: 220px;
+  box-shadow: var(--shadow-soft);
+}
+.success-feedback__icon {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: #dcfce7;
+  color: #16a34a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 10px;
+}
+.success-feedback__icon .material-icons { font-size: 48px; }
+.success-feedback__text { font-size: 1.1rem; font-weight: 700; }
+.success-feedback--hide { opacity: 0; transition: opacity 0.2s; }
+@keyframes success-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 /* Recycling refresh */
 .eco-summary {
   background: #ecfdf3;
@@ -867,8 +958,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 /* Header logo sizing */
 .app-logo {
-  width: 120px;
-  height: 120px;
+  width: 140px;
+  height: 140px;
 }
 
 /* Cards in lists */
