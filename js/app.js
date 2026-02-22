@@ -189,6 +189,7 @@ let currentView = '';
 let reminderTimers = [];
 let medicationAlertTimer = null;
 let dailyRescheduleTimer = null;
+let reminderSweepTimer = null;
 
 function clearReminderTimers() {
   reminderTimers.forEach(function (t) { clearTimeout(t); });
@@ -349,6 +350,7 @@ function scheduleReminderNotifications() {
     });
   });
   scheduleDailyReminderReschedule();
+  checkDueRemindersNow();
 }
 
 function scheduleDailyReminderReschedule() {
@@ -360,6 +362,53 @@ function scheduleDailyReminderReschedule() {
   dailyRescheduleTimer = setTimeout(function () {
     scheduleReminderNotifications();
   }, delay);
+}
+
+function checkDueRemindersNow() {
+  var settings = getSettings();
+  if (!settings.notifications) return;
+  var today = todayStr();
+  var now = new Date();
+  var reminders = getReminders().filter(function (r) { return r.isActive; });
+  reminders.forEach(function (r) {
+    var startOk = !r.startDate || today >= r.startDate;
+    var endOk = !r.endDate || today <= r.endDate;
+    if (!startOk || !endOk) return;
+    var times = Array.isArray(r.times) && r.times.length ? r.times : (r.time ? [r.time] : []);
+    if (!times.length) return;
+    var notifiedTimes = (r.lastNotifiedDate === today && Array.isArray(r.lastNotifiedTimes)) ? r.lastNotifiedTimes : [];
+    var dueTimes = [];
+    times.forEach(function (t) {
+      if (!t) return;
+      if (notifiedTimes.indexOf(t) !== -1) return;
+      var parts = t.split(':');
+      var hh = parseInt(parts[0] || '0', 10);
+      var mm = parseInt(parts[1] || '0', 10);
+      var fireAt = new Date();
+      fireAt.setHours(hh, mm, 0, 0);
+      if (fireAt <= now) dueTimes.push(t);
+    });
+    if (!dueTimes.length) return;
+    var med = getMedicationById(r.medicationId);
+    var msg = 'Hora de tomar ' + (med ? med.name : 'o teu medicamento') + '.';
+    showToast(msg);
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      try { new Notification('Lembrete DailyMed', { body: msg }); } catch (e) {}
+    }
+    r.lastNotifiedDate = today;
+    r.lastNotifiedTimes = Array.isArray(r.lastNotifiedTimes) ? r.lastNotifiedTimes.slice() : [];
+    dueTimes.forEach(function (t) {
+      if (r.lastNotifiedTimes.indexOf(t) === -1) r.lastNotifiedTimes.push(t);
+    });
+    saveReminder(r);
+  });
+}
+
+function startReminderSweep() {
+  if (reminderSweepTimer) clearInterval(reminderSweepTimer);
+  reminderSweepTimer = setInterval(function () {
+    checkDueRemindersNow();
+  }, 60 * 1000);
 }
 
 function setNavActive(section) {
@@ -1605,6 +1654,7 @@ function afterRender(path, params) {
       setSettings({ notifications: notifCheck.checked });
       if (notifCheck.checked && typeof Notification !== 'undefined' && Notification.permission === 'default') Notification.requestPermission();
       scheduleReminderNotifications();
+      checkDueRemindersNow();
       scheduleMedicationAlertChecks();
       checkMedicationAlerts();
     });
@@ -2035,6 +2085,8 @@ function init() {
     }
   });
   scheduleReminderNotifications();
+  startReminderSweep();
+  checkDueRemindersNow();
   scheduleMedicationAlertChecks();
   checkMedicationAlerts();
   runRoute();
