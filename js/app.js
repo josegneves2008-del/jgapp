@@ -383,7 +383,7 @@ function viewHome() {
     '<a href="#definicoes" class="header-action" aria-label="Definições"><span class="material-icons">settings</span></a>' +
     '</header>' +
     '<main class="app-main space-y-5 bg-white">' +
-    '<div class="grid grid-cols-2 gap-3">' +
+    '<div class="grid grid-cols-1 gap-3">' +
     '<a href="#lembretes" class="home-shortcut home-shortcut--secondary"><span class="material-icons text-2xl">schedule</span><span>Lembretes</span></a>' +
     '<a href="#medicacao" class="home-shortcut home-shortcut--primary"><span class="material-icons text-2xl">medication</span><span>Armário</span></a>' +
     '<a href="#reciclagem" class="home-shortcut home-shortcut--secondary"><span class="material-icons text-2xl">eco</span><span>Reciclar</span></a>' +
@@ -456,10 +456,10 @@ function viewMedicacaoArmario(params) {
     const dotHtml = m.isActive ? '<span class="absolute top-3 right-3 w-2.5 h-2.5 rounded-full bg-primary" aria-hidden="true" title="Ativo"></span>' : '';
     const validity = getValidityStatus(m.expiryDate);
     const isLow = (parseInt(m.quantity || 0, 10) || 0) <= 10;
-    const badges = [
-      validity.type === 'expired' ? '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700">Expirado</span>' : '',
-      validity.type === 'soon' ? '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-yellow-100 text-yellow-700">Expira em breve</span>' : '',
-      isLow ? '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-100 text-rose-700">Stock baixo</span>' : '',
+  const badges = [
+      validity.type === 'expired' ? '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[12px] font-semibold bg-red-100 text-red-700">Expirado</span>' : '',
+      validity.type === 'soon' ? '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[12px] font-semibold bg-yellow-100 text-yellow-700">Expira em breve</span>' : '',
+      isLow ? '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[12px] font-semibold bg-rose-100 text-rose-700">Stock baixo</span>' : '',
     ].filter(Boolean).join(' ');
     listHtml += '<div class="p-4 ' + cardBg + ' relative">' +
       dotHtml +
@@ -493,12 +493,13 @@ function viewMedicacaoArmario(params) {
   if (detected.length > 0) banner = '<a href="#medicacao-interacoes" class="block p-3 rounded-xl bg-red-50 border border-red-200 text-red-800 text-sm"><span class="material-icons align-middle text-lg mr-1">warning</span>Atenção: ' + detected.length + ' interação(ões) detetada(s). Toca para ver.</a>';
   const gridOrEmpty = list.length === 0
     ? '<div class="empty-state"><div class="empty-icon"><span class="material-icons">inventory_2</span></div><p>Não existem medicamentos para mostrar.</p><a href="#medicacao-adicionar" class="inline-flex items-center justify-center mt-3 px-4 py-2 btn-primary">Adicionar medicamento</a></div>'
-    : '<div class="grid grid-cols-2 gap-3">' + listHtml + '</div><button type="button" id="btn-adicionar-medicamento-fab" class="fixed bottom-24 right-4 w-14 h-14 rounded-full bg-primary text-on-primary flex items-center justify-center shadow-lg" aria-label="Adicionar medicamento"><span class="material-icons">add</span></button>';
+    : '<div class="grid grid-cols-1 gap-3">' + listHtml + '</div><button type="button" id="btn-adicionar-medicamento-fab" class="fixed bottom-24 right-4 w-14 h-14 rounded-full bg-primary text-on-primary flex items-center justify-center shadow-lg" aria-label="Adicionar medicamento"><span class="material-icons">add</span></button>';
 
   return pageHeader(category ? category : 'Armário de Medicamentos', '#medicacao') +
     '<main class="app-main space-y-4 bg-white">' +
     '<a href="#medicacao" class="flex items-center justify-center gap-2 w-full btn-ghost font-medium"><span class="material-icons text-lg">arrow_back</span>Voltar às Categorias</a>' +
-    '<input type="search" placeholder="Pesquisar nome ou fabricante..." class="w-full px-4 py-2 rounded-xl border border-gray-200" id="armario-search" value="' + (params.q || '').replace(/"/g, '&quot;') + '" />' +
+    '<input type="search" placeholder="Pesquisar nome ou fabricante..." class="w-full px-4 py-2 rounded-xl border border-gray-200" id="armario-search" aria-describedby="armario-help" value="' + (params.q || '').replace(/"/g, '&quot;') + '" />' +
+    '<p class="text-sm text-on-surface-variant" id="armario-help">Pesquisa pelo nome ou fabricante e usa o filtro para reduzir a lista.</p>' +
     '<h3 class="font-bold text-black">Os Meus Medicamentos</h3>' +
     filterSelect +
     '<p class="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-sm bg-gray-100 text-gray-700"><span class="w-2 h-2 rounded-full bg-primary"></span>Medicamentos ativos</p>' +
@@ -794,8 +795,8 @@ function viewLembretesNovo() {
     '<div id="rem-period-list" class="space-y-2">' + periodButtons + '</div>' +
     '<div class="mt-4">' +
     '<p class="text-sm font-medium mb-1">Seleciona até 3 horários</p>' +
-    '<div id="rem-time-grid" class="grid grid-cols-3 gap-2"></div>' +
-    '<p class="text-xs text-on-surface-variant mt-1">Os horários são sugeridos de 30 em 30 minutos dentro do período escolhido.</p>' +
+    '<div id="rem-time-grid" class="grid grid-cols-3 gap-2" aria-describedby="rem-time-help"></div>' +
+    '<p class="text-sm text-on-surface-variant mt-1" id="rem-time-help">Os horários são sugeridos de 30 em 30 minutos dentro do período escolhido.</p>' +
     '</div>' +
     '</div>' +
     '<button type="submit" class="w-full py-3 btn-primary font-medium rounded-xl btn-round">Criar lembrete</button></form></main>';
@@ -833,8 +834,8 @@ function viewLembretesEditar(params) {
     '<div id="rem-period-list" class="space-y-2">' + periodButtons + '</div>' +
     '<div class="mt-4">' +
     '<p class="text-sm font-medium mb-1">Seleciona até 3 horários</p>' +
-    '<div id="rem-time-grid" class="grid grid-cols-3 gap-2"></div>' +
-    '<p class="text-xs text-on-surface-variant mt-1">Os horários são sugeridos de 30 em 30 minutos dentro do período escolhido.</p>' +
+    '<div id="rem-time-grid" class="grid grid-cols-3 gap-2" aria-describedby="rem-time-help-edit"></div>' +
+    '<p class="text-sm text-on-surface-variant mt-1" id="rem-time-help-edit">Os horários são sugeridos de 30 em 30 minutos dentro do período escolhido.</p>' +
     '</div>' +
     '</div>' +
     '<button type="submit" class="w-full py-3 btn-primary font-medium rounded-xl btn-round">Guardar</button></form></main>';
@@ -955,7 +956,7 @@ function viewReciclagemHistorico() {
 function viewDicas() {
   const cards = DICAS_ARTIGOS.map(function (a) { return '<a href="#dicas-artigo?id=' + a.id + '" class="block app-card overflow-hidden"><img src="' + a.image + '" alt="" class="w-full h-40 object-cover" /><div class="p-4"><span class="text-xs text-primary font-medium">' + a.category + '</span><h2 class="font-bold mt-1">' + a.title.replace(/</g, '&lt;') + '</h2><p class="text-sm text-on-surface-variant">' + a.readTime + ' min de leitura</p></div></a>'; }).join('');
   return pageHeader('Dicas de Saúde', null) +
-    '<main class="app-main bg-white"><div class="grid gap-4">' +
+    '<main class="app-main bg-white"><div class="grid grid-cols-1 gap-4">' +
     '<a href="#checklist-viagem" class="flex items-center justify-between w-full py-3 px-4 rounded-xl app-card app-card--soft text-primary font-medium"><span class="flex items-center gap-3"><span class="material-icons">flight_takeoff</span><span>Lista de verificação de viagem</span></span><span class="material-icons text-gray-500">chevron_right</span></a>' +
     cards + '</div></main>';
 }
@@ -1745,6 +1746,10 @@ function showAddMedicationModal() {
     '<button type="button" id="modal-add-cancelar" class="btn-ghost w-full">Cancelar</button>' +
     '</div></div></div>';
   document.body.insertAdjacentHTML('beforeend', html);
+  setTimeout(function () {
+    var primary = document.getElementById('modal-add-manual');
+    if (primary) primary.focus();
+  }, 0);
   function closeModal() { var el = document.getElementById('modal-add-med'); if (el) el.remove(); }
   document.getElementById('modal-add-manual').addEventListener('click', function () { closeModal(); navigate('medicacao-adicionar'); });
   document.getElementById('modal-add-pesquisar').addEventListener('click', function () { closeModal(); navigate('medicacao-pesquisar'); });
@@ -1756,6 +1761,10 @@ function showInteractionsModal(detected, onClose) {
   var listHtml = detected.map(function (i) { return '<li class="p-2 rounded border-l-4" style="border-color:' + i.color + '"><p class="font-medium text-sm">' + i.combination + '</p><p class="text-xs">' + i.mechanism + '</p></li>'; }).join('');
   var html = '<div id="modal-overlay" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div class="bg-white rounded-2xl max-w-md w-full max-h-[80vh] overflow-y-auto p-4"><h3 class="font-bold text-lg mb-2">Interações detetadas</h3><p class="text-sm text-on-surface-variant mb-4">Consulte um profissional de saúde.</p><ul class="space-y-2 mb-4">' + listHtml + '</ul><button type="button" id="modal-close-btn" class="btn-primary w-full">Entendi</button></div></div>';
   document.body.insertAdjacentHTML('beforeend', html);
+  setTimeout(function () {
+    var primary = document.getElementById('modal-close-btn');
+    if (primary) primary.focus();
+  }, 0);
   document.getElementById('modal-close-btn').addEventListener('click', function () { document.getElementById('modal-overlay').remove(); if (onClose) onClose(); });
   document.getElementById('modal-overlay').addEventListener('click', function (e) { if (e.target.id === 'modal-overlay') { document.getElementById('modal-overlay').remove(); if (onClose) onClose(); } });
 }
@@ -1802,6 +1811,10 @@ function showMedicationDetailModal(m) {
   document.body.insertAdjacentHTML('beforeend', body);
   function closeModal() { var el = document.getElementById('modal-med-detail'); if (el) el.remove(); }
   var wrap = document.getElementById('modal-med-detail');
+  setTimeout(function () {
+    var primary = wrap ? wrap.querySelector('.modal-med-link.btn-primary') : null;
+    if (primary) primary.focus();
+  }, 0);
   wrap.querySelector('.modal-med-close').addEventListener('click', closeModal);
   wrap.addEventListener('click', function (e) { if (e.target === wrap) closeModal(); });
   wrap.querySelectorAll('.modal-med-link').forEach(function (link) {
@@ -1875,6 +1888,10 @@ function maybeShowOnboarding() {
         finish();
       }
     });
+    setTimeout(function () {
+      var primary = document.getElementById('onb-next');
+      if (primary) primary.focus();
+    }, 0);
   }
   function closeOverlay() {
     var el = document.getElementById('onboarding-overlay');
