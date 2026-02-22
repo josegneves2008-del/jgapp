@@ -161,6 +161,7 @@ function haversineKm(lat1, lon1, lat2, lon2) {
 
 let currentView = '';
 let reminderTimers = [];
+let medicationAlertTimer = null;
 
 function clearReminderTimers() {
   reminderTimers.forEach(function (t) { clearTimeout(t); });
@@ -185,6 +186,99 @@ function showToast(message, icon) {
     var el = document.getElementById('toast-reminder');
     if (el) el.remove();
   }, 5000);
+}
+
+const ALERTS_KEY = 'dailymed_medication_alerts';
+
+function getAlertState() {
+  try {
+    var raw = localStorage.getItem(ALERTS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function setAlertState(state) {
+  localStorage.setItem(ALERTS_KEY, JSON.stringify(state));
+}
+
+function markAlertNotified(state, medId, type) {
+  if (!state[medId]) state[medId] = {};
+  state[medId][type] = { date: todayStr() };
+}
+
+function wasAlertNotifiedToday(state, medId, type) {
+  return !!(state[medId] && state[medId][type] && state[medId][type].date === todayStr());
+}
+
+function notifyUser(title, message, icon) {
+  showToast(message, icon);
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    try { new Notification(title, { body: message }); } catch (e) {}
+  }
+}
+
+function checkMedicationAlerts() {
+  var settings = getSettings();
+  if (!settings.notifications) return;
+  if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+    try { Notification.requestPermission(); } catch (e) {}
+  }
+  var meds = getMedications();
+  if (!meds.length) return;
+
+  var state = getAlertState();
+  var pending = [];
+
+  meds.forEach(function (m) {
+    var name = m.name || 'Medicamento';
+
+    var validity = getValidityStatus(m.expiryDate);
+    if (validity.type === 'soon' || validity.type === 'expired') {
+      var typeKey = validity.type === 'expired' ? 'expiry_expired' : 'expiry_soon';
+      if (!wasAlertNotifiedToday(state, m.id, typeKey)) {
+        var msg = validity.type === 'expired'
+          ? 'O medicamento ' + name + ' está expirado.'
+          : 'O medicamento ' + name + ' expira em breve.';
+        pending.push({ medId: m.id, type: typeKey, title: 'Alerta DailyMed', message: msg, icon: 'warning' });
+      }
+    }
+
+    var qty = parseInt(m.quantity || 0, 10) || 0;
+    if (qty <= 10) {
+      if (!wasAlertNotifiedToday(state, m.id, 'stock_low')) {
+        var msgStock = 'Stock baixo de ' + name + ' (' + qty + ' un.).';
+        pending.push({ medId: m.id, type: 'stock_low', title: 'Alerta DailyMed', message: msgStock, icon: 'notifications' });
+      }
+    }
+  });
+
+  if (!pending.length) return;
+
+  if (pending.length <= 3) {
+    pending.forEach(function (p) {
+      notifyUser(p.title, p.message, p.icon);
+      markAlertNotified(state, p.medId, p.type);
+    });
+  } else {
+    var expSoon = pending.filter(function (p) { return p.type === 'expiry_soon'; }).length;
+    var expExpired = pending.filter(function (p) { return p.type === 'expiry_expired'; }).length;
+    var lowStock = pending.filter(function (p) { return p.type === 'stock_low'; }).length;
+    var parts = [];
+    if (expExpired) parts.push(expExpired + ' expirado(s)');
+    if (expSoon) parts.push(expSoon + ' a expirar');
+    if (lowStock) parts.push(lowStock + ' com stock baixo');
+    notifyUser('Alertas DailyMed', 'Tens ' + parts.join(', ') + '.', 'warning');
+    pending.forEach(function (p) { markAlertNotified(state, p.medId, p.type); });
+  }
+
+  setAlertState(state);
+}
+
+function scheduleMedicationAlertChecks() {
+  if (medicationAlertTimer) clearInterval(medicationAlertTimer);
+  medicationAlertTimer = setInterval(checkMedicationAlerts, 60 * 60 * 1000);
 }
 
 function scheduleReminderNotifications() {
@@ -884,6 +978,7 @@ function afterRender(path, params) {
     };
     saveMedication(med);
     showToast('Medicamento guardado', 'check_circle');
+    checkMedicationAlerts();
     var detected = detectInteractions();
     if (detected.length > 0) {
       showInteractionsModal(detected, function () { navigate('medicacao-armario'); });
@@ -913,6 +1008,7 @@ function afterRender(path, params) {
       m.notes = fd.get('notes') || '';
       saveMedication(m);
       showToast('Medicamento guardado', 'check_circle');
+      checkMedicationAlerts();
       navigate('medicacao-detalhes', { id: id });
     });
   }
@@ -922,6 +1018,7 @@ function afterRender(path, params) {
     btn.addEventListener('click', function () {
       if (confirm('Remover este medicamento?')) {
         deleteMedication(btn.dataset.id);
+        checkMedicationAlerts();
         runRoute();
       }
     });
@@ -1176,6 +1273,7 @@ function afterRender(path, params) {
         }
         saveReminder(r);
       }
+      checkMedicationAlerts();
       runRoute();
     });
   });
@@ -1272,6 +1370,8 @@ function afterRender(path, params) {
       setSettings({ notifications: notifCheck.checked });
       if (notifCheck.checked && typeof Notification !== 'undefined' && Notification.permission === 'default') Notification.requestPermission();
       scheduleReminderNotifications();
+      scheduleMedicationAlertChecks();
+      checkMedicationAlerts();
     });
   }
   var themeSelect = document.getElementById('setting-theme');
@@ -1641,6 +1741,8 @@ function init() {
     }
   });
   scheduleReminderNotifications();
+  scheduleMedicationAlertChecks();
+  checkMedicationAlerts();
   runRoute();
 }
 
