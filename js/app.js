@@ -42,9 +42,11 @@ const GREEN_UNITS = { box: 2, blister: 1, bottle: 3 };
 const POINTS_UNIT = { box: 5, blister: 3, bottle: 7 };
 
 const RECYCLING_POINTS = [
-  { name: 'Farmácia Central', address: 'Rua das Flores, 123, Lisboa', distance: '0.5 km' },
-  { name: 'Parafarmácia Saúde', address: 'Av. da Liberdade, 45, Lisboa', distance: '1.2 km' },
-  { name: 'Farmácia do Martim', address: 'Largo do Martim Moniz, 1, Lisboa', distance: '2 km' },
+  { name: 'Farmácia Lemos', address: 'Praça Carlos Alberto 31, 4050-157 Porto', distance: '—' },
+  { name: 'Farmácia Aliança', address: 'Rua Conceição 10, Porto', distance: '—' },
+  { name: 'Farmácia Boavista', address: 'Rua Boavista 601, 4050-109 Porto', distance: '—' },
+  { name: 'Farmácia Saúde', address: 'Avenida dos Combatentes da Grande Guerra 689, 4200-190 Porto', distance: '—' },
+  { name: 'Farmácia Alves', address: 'Praça do Exército Libertador 62, 4250-204 Porto', distance: '—' },
 ];
 
 const DICAS_ARTIGOS = [
@@ -80,6 +82,16 @@ function formatDateYMD(dateStr) {
   const d = dateStr.split('-');
   if (d.length !== 3) return dateStr;
   return d[2] + '/' + d[1] + '/' + d[0];
+}
+
+function escapeHtml(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function cleanNotesFromLegacy(notes) {
@@ -162,6 +174,7 @@ function haversineKm(lat1, lon1, lat2, lon2) {
 let currentView = '';
 let reminderTimers = [];
 let medicationAlertTimer = null;
+let dailyRescheduleTimer = null;
 
 function clearReminderTimers() {
   reminderTimers.forEach(function (t) { clearTimeout(t); });
@@ -321,6 +334,18 @@ function scheduleReminderNotifications() {
       reminderTimers.push(timer);
     });
   });
+  scheduleDailyReminderReschedule();
+}
+
+function scheduleDailyReminderReschedule() {
+  if (dailyRescheduleTimer) clearTimeout(dailyRescheduleTimer);
+  var now = new Date();
+  var next = new Date(now);
+  next.setHours(24, 0, 5, 0);
+  var delay = next.getTime() - now.getTime();
+  dailyRescheduleTimer = setTimeout(function () {
+    scheduleReminderNotifications();
+  }, delay);
 }
 
 function setNavActive(section) {
@@ -411,7 +436,7 @@ function viewMedicacaoArmario(params) {
   if (category) list = list.filter(function (m) { return m.category === category; });
   if (search) list = list.filter(function (m) { return (m.name || '').toLowerCase().includes(search) || (m.manufacturer || '').toLowerCase().includes(search); });
   if (filter === 'ativos') list = list.filter(function (m) { return m.isActive; });
-  if (filter === 'stock') list = list.filter(function (m) { return m.isInStock; });
+  if (filter === 'stock') list = list.filter(function (m) { return (parseInt(m.quantity || 0, 10) || 0) > 0; });
   if (filter === 'expirando') list = list.filter(function (m) { return getValidityStatus(m.expiryDate).type === 'soon'; });
   if (filter === 'expirados') list = list.filter(function (m) { return getValidityStatus(m.expiryDate).type === 'expired'; });
   if (filter === 'baixo') list = list.filter(function (m) { return (m.quantity || 0) <= 10; });
@@ -428,6 +453,13 @@ function viewMedicacaoArmario(params) {
     const validadeStr = formatDateYMD(m.expiryDate) || '-';
     const cardBg = m.isActive ? 'app-card app-card--soft text-gray-800' : 'app-card text-gray-800';
     const dotHtml = m.isActive ? '<span class="absolute top-3 right-3 w-2.5 h-2.5 rounded-full bg-primary" aria-hidden="true" title="Ativo"></span>' : '';
+    const validity = getValidityStatus(m.expiryDate);
+    const isLow = (parseInt(m.quantity || 0, 10) || 0) <= 10;
+    const badges = [
+      validity.type === 'expired' ? '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700">Expirado</span>' : '',
+      validity.type === 'soon' ? '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-yellow-100 text-yellow-700">Expira em breve</span>' : '',
+      isLow ? '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-100 text-rose-700">Stock baixo</span>' : '',
+    ].filter(Boolean).join(' ');
     listHtml += '<div class="p-4 ' + cardBg + ' relative">' +
       dotHtml +
       '<div class="med-card-detail cursor-pointer block focus:outline-none" data-id="' + m.id + '" role="button" tabindex="0">' +
@@ -435,12 +467,13 @@ function viewMedicacaoArmario(params) {
       '<p class="text-sm text-gray-600 mt-0.5">' + dosageEsc + '</p>' +
       '<p class="text-sm text-gray-600 mt-0.5">' + qty + ' unidades</p>' +
       '<p class="text-sm text-gray-600 mt-0.5">Validade: ' + validadeStr + '</p>' +
+      (badges ? '<div class="mt-2 flex flex-wrap gap-1">' + badges + '</div>' : '') +
       '</div>' +
     '<div class="mt-2 flex gap-2"><a href="#medicacao-editar?id=' + m.id + '" class="btn-link btn-link--primary">Editar</a><button type="button" class="btn-link btn-link--danger delete-med" data-id="' + m.id + '">Remover</button></div>' +
       '</div>';
   });
 
-  let filterLinks = '<a href="' + filterBase + '" class="chip ' + (!filter ? 'chip--active' : 'chip--ghost') + '">' + (!filter ? '<span class="w-2 h-2 rounded-full bg-primary"></span>' : '') + 'Todos</a>';
+  let filterLinks = '<a href="' + filterBase + '" class="chip ' + (filter === 'todos' ? 'chip--active' : 'chip--ghost') + '">' + (filter === 'todos' ? '<span class="w-2 h-2 rounded-full bg-primary"></span>' : '') + 'Todos</a>';
   filterLinks += '<a href="' + filterBase + (catQs ? '&' : '?') + 'filter=ativos' + '" class="chip ' + (filter === 'ativos' ? 'chip--active' : 'chip--ghost') + '">' + (filter === 'ativos' ? '<span class="w-2 h-2 rounded-full bg-primary"></span>' : '') + 'Medicamentos ativos</a>';
   ['stock', 'expirando', 'expirados', 'baixo'].forEach(function (f) {
     const label = f === 'stock' ? 'Em stock' : f === 'expirando' ? 'A expirar' : f === 'expirados' ? 'Expirados' : 'Stock baixo';
@@ -466,7 +499,7 @@ function viewMedicacaoArmario(params) {
     '<h3 class="font-bold text-black">Os Meus Medicamentos</h3>' +
     '<div class="flex flex-wrap gap-2">' + filterLinks + '</div>' +
     '<p class="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-sm bg-gray-100 text-gray-700"><span class="w-2 h-2 rounded-full bg-primary"></span>Medicamentos ativos</p>' +
-    (category ? '<p class="text-sm text-on-surface-variant">Categoria: ' + category.replace(/</g, '&lt;') + '</p>' : '') +
+    (category ? '<p class="text-sm text-on-surface-variant">Categoria: ' + escapeHtml(category) + '</p>' : '') +
     banner +
     gridOrEmpty +
     '</main>';
@@ -497,8 +530,8 @@ function viewMedicacaoAdicionar(params) {
     '<section class="med-form-section">' +
     '<h3 class="med-form-section-title"><span class="material-icons text-lg">inventory_2</span>Stock e validade</h3>' +
     '<div class="space-y-3">' +
-    '<div><label class="med-form-label">Número de Unidades *</label><input type="number" name="quantity" required min="1" class="w-full px-4 py-2.5 input-outline" value="30" /></div>' +
-    '<div><label class="med-form-label">Data de Validade *</label><input type="date" name="expiryDate" required min="' + todayStr() + '" class="w-full px-4 py-2.5 input-outline" /></div>' +
+    '<div><label class="med-form-label">Número de Unidades *</label><input type="number" name="quantity" required min="0" class="w-full px-4 py-2.5 input-outline" value="30" /></div>' +
+    '<div><label class="med-form-label">Data de Validade *</label><input type="date" name="expiryDate" required class="w-full px-4 py-2.5 input-outline" /></div>' +
     '<div><label class="med-form-label">Categoria *</label><select name="category" required class="w-full px-4 py-2.5 input-outline"><option value="">Selecionar...</option>' + CATEGORIAS.map(function (c) { return '<option value="' + c + '">' + c + '</option>'; }).join('') + '</select></div>' +
     '<div><label class="med-form-label">Estado</label><select name="isActive" class="w-full px-4 py-2.5 input-outline"><option value="true">Ativo</option><option value="false">Não Ativo</option></select></div>' +
     '</div></section>' +
@@ -868,10 +901,11 @@ const ROUTES = {
 
 function pageHeader(title, backHref) {
   var back = backHref ? '<a href="' + backHref + '" class="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 p-1 rounded-full hover:bg-gray-100" aria-label="Voltar"><span class="material-icons">arrow_back</span></a>' : '';
+  var safeTitle = title ? escapeHtml(title) : '';
   return '<header class="subpage-header relative px-4 flex items-center justify-center bg-white">' + back +
     '<img src="logo.png" alt="DailyMed" class="app-logo object-contain" />' +
     '</header>' +
-    (title ? '<div class="subpage-title-wrap px-4 pb-4 bg-white"><h2 class="page-title text-black text-center">' + title + '</h2></div>' : '');
+    (title ? '<div class="subpage-title-wrap px-4 pb-4 bg-white"><h2 class="page-title text-black text-center">' + safeTitle + '</h2></div>' : '');
 }
 
 function runRoute() {
@@ -1016,7 +1050,9 @@ function afterRender(path, params) {
   document.querySelectorAll('.delete-med').forEach(function (btn) {
     btn.addEventListener('click', function (e) { e.stopPropagation(); });
     btn.addEventListener('click', function () {
-      if (confirm('Remover este medicamento?')) {
+      var m = getMedicationById(btn.dataset.id);
+      var name = m ? (m.name || 'este medicamento') : 'este medicamento';
+      if (confirm('Remover ' + name + '?')) {
         deleteMedication(btn.dataset.id);
         checkMedicationAlerts();
         runRoute();
@@ -1468,6 +1504,7 @@ function initRecyclingMap() {
   }
 
   function geocodeAddress(address) {
+    if (!address) return Promise.resolve(null);
     var url = 'https://nominatim.openstreetmap.org/search?format=json&q=' + encodeURIComponent(address);
     return fetch(url, { headers: { 'Accept-Language': 'pt-PT' } })
       .then(function (r) { return r.json(); })
@@ -1479,15 +1516,37 @@ function initRecyclingMap() {
       .catch(function () { return null; });
   }
 
+  function getCachedCoords(address) {
+    try {
+      var key = 'dailymed_geo_' + encodeURIComponent(address);
+      var raw = localStorage.getItem(key);
+      if (!raw) return null;
+      var data = JSON.parse(raw);
+      if (!data || typeof data.lat !== 'number' || typeof data.lng !== 'number') return null;
+      return { lat: data.lat, lng: data.lng };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function setCachedCoords(address, coords) {
+    try {
+      var key = 'dailymed_geo_' + encodeURIComponent(address);
+      localStorage.setItem(key, JSON.stringify(coords));
+    } catch (e) {}
+  }
+
   async function geocodeAllPoints() {
     setStatus('A localizar pontos…');
     for (var i = 0; i < RECYCLING_POINTS.length; i += 1) {
       var p = RECYCLING_POINTS[i];
       if (!p.address) continue;
-      var coords = await geocodeAddress(p.address);
+      var cached = getCachedCoords(p.address);
+      var coords = cached || await geocodeAddress(p.address);
       if (coords && !Number.isNaN(coords.lat) && !Number.isNaN(coords.lng)) {
         p.lat = coords.lat;
         p.lng = coords.lng;
+        if (!cached) setCachedCoords(p.address, coords);
       }
       await sleep(1000);
     }

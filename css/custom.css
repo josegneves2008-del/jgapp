@@ -45,6 +45,19 @@
   --secondary-container: #2a3d47;
 }
 
+/* Tailwind utility overrides for dark mode */
+.dark .bg-white { background: var(--surface) !important; }
+.dark .text-black { color: var(--on-surface) !important; }
+.dark .border-gray-200,
+.dark .border-gray-100,
+.dark .border-gray-300 { border-color: var(--outline) !important; }
+.dark .text-gray-500,
+.dark .text-gray-600,
+.dark .text-gray-700 { color: var(--on-surface-variant) !important; }
+.dark .bg-gray-50,
+.dark .bg-gray-100,
+.dark .bg-gray-200 { background: rgba(255, 255, 255, 0.04) !important; }
+
 body { font-family: 'Manrope', system-ui, -apple-system, sans-serif; background: var(--background); color: var(--on-surface); }
 .card-round { border-radius: var(--radius-md); }
 .btn-round { border-radius: var(--radius-sm); }
