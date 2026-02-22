@@ -3,7 +3,7 @@
  */
 
 const CATEGORIAS = [
-  'Medicação Diária', 'Diarreia', 'Dores de Cabeça', 'Dores Musculares', 'Estômago', 'Febre', 'Garganta',
+  'Diarreia', 'Dores de Cabeça', 'Dores Musculares', 'Estômago', 'Febre', 'Garganta',
   'Gripes e Constipações', 'Insónias', 'Irritação Ocular', 'Pele', 'Tosse', 'Vitaminas', 'Vómitos',
 ];
 
@@ -1216,7 +1216,7 @@ const ROUTES = {
 };
 
 function pageHeader(title, backHref) {
-  var back = backHref ? '<a href="' + backHref + '" class="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 p-1 rounded-full hover:bg-gray-100" aria-label="Voltar"><span class="material-icons">arrow_back</span></a>' : '';
+  var back = backHref ? '<button type="button" class="back-btn absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 p-1 rounded-full hover:bg-gray-100" data-back="' + backHref + '" aria-label="Voltar"><span class="material-icons">arrow_back</span></button>' : '';
   var safeTitle = title ? escapeHtml(title) : '';
   return '<header class="subpage-header relative px-4 flex items-center justify-center bg-white">' + back +
     '<img src="logo.png" alt="DailyMed" class="app-logo object-contain" />' +
@@ -1237,6 +1237,24 @@ function runRoute() {
 function afterRender(path, params) {
   setupFab();
   if (path === 'reciclagem-pontos') initRecyclingMap();
+
+  document.querySelectorAll('.back-btn').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.preventDefault();
+      var fallback = btn.dataset.back || '#home';
+      if (window.history && history.length > 1) {
+        history.back();
+        return;
+      }
+      if (fallback) {
+        if (fallback.charAt(0) === '#') {
+          window.location.hash = fallback;
+        } else {
+          navigate(fallback);
+        }
+      }
+    });
+  });
 
   var armarioSearch = document.getElementById('armario-search');
   if (armarioSearch) {

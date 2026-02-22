@@ -627,8 +627,16 @@ button:active, a:active { transform: translateY(1px); }
   font-weight: 600;
   color: #4b5563;
 }
-.home-shortcut--primary { border-color: rgba(148, 130, 189, 0.55); color: #5b4a83; }
-.home-shortcut--secondary { border-color: rgba(148, 163, 184, 0.65); color: #4b5563; }
+.home-shortcut--primary {
+  background: #ecfdf3;
+  border-color: #86efac;
+  color: #166534;
+}
+.home-shortcut--secondary {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}
 .summary-card {
   display: flex;
   justify-content: space-between;
