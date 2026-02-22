@@ -69,50 +69,77 @@ const TRAVEL_SECTIONS = [
   { id: 's10', title: 'Dicas rápidas', items: ['Leva os medicamentos na bagagem de mão', 'Verifica se algum medicamento é proibido no país de destino', 'Mantém tudo na embalagem original', 'Se vais para um destino exótico, considera falar com um médico antes'], checkbox: false },
 ];
 
-function genId() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2);
-}
-
-function todayStr() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function formatDateYMD(dateStr) {
+var Core = (typeof DailyMedCore !== 'undefined') ? DailyMedCore : null;
+var todayStr = Core ? Core.todayStr : function () { return new Date().toISOString().slice(0, 10); };
+var formatDateYMD = Core ? Core.formatDateYMD : function (dateStr) {
   if (!dateStr) return '';
-  const d = dateStr.split('-');
+  var d = dateStr.split('-');
   if (d.length !== 3) return dateStr;
   return d[2] + '/' + d[1] + '/' + d[0];
-}
-
-function escapeHtml(str) {
+};
+var escapeHtml = Core ? Core.escapeHtml : function (str) {
   if (str == null) return '';
   return String(str)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
+    .replace(/\"/g, '&quot;')
     .replace(/'/g, '&#39;');
-}
-
-function cleanNotesFromLegacy(notes) {
+};
+var cleanNotesFromLegacy = Core ? Core.cleanNotesFromLegacy : function (notes) {
   if (!notes || typeof notes !== 'string') return notes || '';
   return notes
     .replace(/\s*Posologia:\s*---\.?\s*Indicação:\s*---\.?\s*/gi, '')
     .replace(/\s*Indicação:\s*---\.?\s*/gi, '')
     .replace(/\s*Posologia:\s*---\.?\s*/gi, '')
     .trim();
-}
-
-function getValidityStatus(expiryDate) {
+};
+var getValidityStatus = Core ? Core.getValidityStatus : function (expiryDate) {
   if (!expiryDate) return { label: 'Válido', type: 'ok' };
-  const today = new Date();
+  var today = new Date();
   today.setHours(0, 0, 0, 0);
-  const exp = new Date(expiryDate);
+  var exp = new Date(expiryDate);
   exp.setHours(0, 0, 0, 0);
   if (exp < today) return { label: 'Expirado', type: 'expired' };
-  const days = Math.ceil((exp - today) / (1000 * 60 * 60 * 24));
+  var days = Math.ceil((exp - today) / (1000 * 60 * 60 * 24));
   if (days <= 30) return { label: 'Expira em breve', type: 'soon' };
   return { label: 'Válido', type: 'ok' };
+};
+var parseHash = Core ? Core.parseHash : function () {
+  var hash = (window.location.hash || '#home').slice(1);
+  var parts = hash.split('?');
+  var path = parts[0] || 'home';
+  var params = {};
+  if (parts[1]) {
+    parts[1].split('&').forEach(function (p) {
+      var kv = p.split('=');
+      params[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || '');
+    });
+  }
+  return { path: path, params: params };
+};
+
+function genId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2);
+}
+
+function debounce(fn, delay) {
+  var t = null;
+  return function () {
+    var ctx = this;
+    var args = arguments;
+    clearTimeout(t);
+    t = setTimeout(function () { fn.apply(ctx, args); }, delay);
+  };
+}
+
+function compactParams(obj) {
+  var out = {};
+  Object.keys(obj || {}).forEach(function (k) {
+    var v = obj[k];
+    if (v !== undefined && v !== null && v !== '') out[k] = v;
+  });
+  return out;
 }
 
 function getStockStatus(quantity) {
@@ -121,19 +148,6 @@ function getStockStatus(quantity) {
   return { label: 'OK', type: 'ok' };
 }
 
-function parseHash() {
-  const hash = (window.location.hash || '#home').slice(1);
-  const parts = hash.split('?');
-  const path = parts[0] || 'home';
-  const params = {};
-  if (parts[1]) {
-    parts[1].split('&').forEach(function (p) {
-      const kv = p.split('=');
-      params[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || '');
-    });
-  }
-  return { path: path, params: params };
-}
 
 function getRemindersForToday() {
   const today = todayStr();
@@ -188,7 +202,7 @@ function showToast(message, icon) {
   var i = icon || 'notifications';
   var html = '<div id="toast-reminder" class="toast-reminder">' +
     '<span class="material-icons">' + i + '</span>' +
-    '<div class="toast-reminder__text">' + message.replace(/</g, '&lt;') + '</div>' +
+    '<div class="toast-reminder__text">' + escapeHtml(message) + '</div>' +
     '</div>';
   document.body.insertAdjacentHTML('beforeend', html);
   setTimeout(function () {
@@ -447,8 +461,8 @@ function viewMedicacaoArmario(params) {
 
   let listHtml = '';
   list.forEach(function (m) {
-    const nameEsc = (m.name || '').replace(/</g, '&lt;');
-    const dosageEsc = (m.dosage || '').replace(/</g, '&lt;');
+    const nameEsc = escapeHtml(m.name || '');
+    const dosageEsc = escapeHtml(m.dosage || '');
     const titleLine = (nameEsc + ' ' + dosageEsc).trim() || 'Medicamento';
     const qty = m.quantity != null ? m.quantity : '-';
     const validadeStr = formatDateYMD(m.expiryDate) || '-';
@@ -498,7 +512,7 @@ function viewMedicacaoArmario(params) {
   return pageHeader(category ? category : 'Armário de Medicamentos', '#medicacao') +
     '<main class="app-main space-y-4 bg-white">' +
     '<a href="#medicacao" class="flex items-center justify-center gap-2 w-full btn-ghost font-medium"><span class="material-icons text-lg">arrow_back</span>Voltar às Categorias</a>' +
-    '<input type="search" placeholder="Pesquisar nome ou fabricante..." class="w-full px-4 py-2 rounded-xl border border-gray-200" id="armario-search" aria-describedby="armario-help" value="' + (params.q || '').replace(/"/g, '&quot;') + '" />' +
+    '<input type="search" placeholder="Pesquisar nome ou fabricante..." class="w-full px-4 py-2 rounded-xl border border-gray-200" id="armario-search" aria-describedby="armario-help" value="' + escapeHtml(params.q || '') + '" />' +
     '<p class="text-sm text-on-surface-variant" id="armario-help">Pesquisa pelo nome ou fabricante e usa o filtro para reduzir a lista.</p>' +
     '<h3 class="font-bold text-black">Os Meus Medicamentos</h3>' +
     filterSelect +
@@ -511,10 +525,10 @@ function viewMedicacaoArmario(params) {
 
 function viewMedicacaoAdicionar(params) {
   const prefilled = params.nome ? { name: params.nome, dosage: params.dosagem, substance: params.substancia } : {};
-  const nameVal = (prefilled.name || '').replace(/"/g, '&quot;');
-  const dosageVal = (prefilled.dosage || '').replace(/"/g, '&quot;');
-  const substanceVal = (prefilled.substance || '').replace(/"/g, '&quot;');
-  const manuVal = (params.titular || '---').replace(/"/g, '&quot;');
+  const nameVal = escapeHtml(prefilled.name || '');
+  const dosageVal = escapeHtml(prefilled.dosage || '');
+  const substanceVal = escapeHtml(prefilled.substance || '');
+  const manuVal = escapeHtml(params.titular || '---');
   return pageHeader('Adicionar Medicamento', '#medicacao') +
     '<main class="app-main spacious bg-gray-50 min-h-screen"><form id="form-add-med" class="max-w-lg mx-auto">' +
     '<section class="med-form-section">' +
@@ -551,14 +565,14 @@ function viewMedicacaoAdicionar(params) {
 function viewMedicacaoDetalhes(params) {
   const m = getMedicationById(params.id);
   if (!m) return viewMedicacaoCategorias();
-  const nameEsc = (m.name || 'Medicamento').replace(/</g, '&lt;');
-  const dosageEsc = (m.dosage || '-').replace(/</g, '&lt;');
-  const substanceEsc = (m.substance || '-').replace(/</g, '&lt;');
-  const manufacturerEsc = (m.manufacturer || '-').replace(/</g, '&lt;');
-  const posologyEsc = (m.posology || '-').replace(/</g, '&lt;');
-  const indicationEsc = (m.indication || '-').replace(/</g, '&lt;');
-  const categoryEsc = (m.category || '-').replace(/</g, '&lt;');
-  const notesEsc = (cleanNotesFromLegacy(m.notes) || '-').replace(/</g, '&lt;');
+  const nameEsc = escapeHtml(m.name || 'Medicamento');
+  const dosageEsc = escapeHtml(m.dosage || '-');
+  const substanceEsc = escapeHtml(m.substance || '-');
+  const manufacturerEsc = escapeHtml(m.manufacturer || '-');
+  const posologyEsc = escapeHtml(m.posology || '-');
+  const indicationEsc = escapeHtml(m.indication || '-');
+  const categoryEsc = escapeHtml(m.category || '-');
+  const notesEsc = escapeHtml(cleanNotesFromLegacy(m.notes) || '-');
   const validadeStr = formatDateYMD(m.expiryDate) || '-';
   const validity = getValidityStatus(m.expiryDate);
   const validityBadge = validity.type === 'expired'
@@ -617,16 +631,16 @@ function viewMedicacaoEditar(params) {
     '<section class="med-form-section">' +
     '<h3 class="med-form-section-title"><span class="material-icons text-lg">medication</span>Identificação</h3>' +
     '<div class="space-y-3">' +
-    '<div><label class="med-form-label">Nome *</label><input type="text" name="name" required class="w-full px-4 py-2.5 input-outline" value="' + (m.name || '').replace(/"/g, '&quot;') + '" /></div>' +
-    '<div><label class="med-form-label">Dosagem *</label><input type="text" name="dosage" required class="w-full px-4 py-2.5 input-outline" value="' + (m.dosage || '').replace(/"/g, '&quot;') + '" /></div>' +
-    '<div><label class="med-form-label">Substância ativa</label><input type="text" name="substance" class="w-full px-4 py-2.5 input-outline" value="' + (m.substance || '').replace(/"/g, '&quot;') + '" /></div>' +
-    '<div><label class="med-form-label">Fabricante (Titular de AIM)</label><input type="text" name="manufacturer" class="w-full px-4 py-2.5 input-outline" value="' + (m.manufacturer || '').replace(/"/g, '&quot;') + '" /></div>' +
+    '<div><label class="med-form-label">Nome *</label><input type="text" name="name" required class="w-full px-4 py-2.5 input-outline" value="' + escapeHtml(m.name || '') + '" /></div>' +
+    '<div><label class="med-form-label">Dosagem *</label><input type="text" name="dosage" required class="w-full px-4 py-2.5 input-outline" value="' + escapeHtml(m.dosage || '') + '" /></div>' +
+    '<div><label class="med-form-label">Substância ativa</label><input type="text" name="substance" class="w-full px-4 py-2.5 input-outline" value="' + escapeHtml(m.substance || '') + '" /></div>' +
+    '<div><label class="med-form-label">Fabricante (Titular de AIM)</label><input type="text" name="manufacturer" class="w-full px-4 py-2.5 input-outline" value="' + escapeHtml(m.manufacturer || '') + '" /></div>' +
     '</div></section>' +
     '<section class="med-form-section">' +
     '<h3 class="med-form-section-title"><span class="material-icons text-lg">description</span>Posologia e indicação</h3>' +
     '<div class="space-y-3">' +
-    '<div><label class="med-form-label">Posologia</label><input type="text" name="posology" class="w-full px-4 py-2.5 input-outline" value="' + (m.posology || '').replace(/"/g, '&quot;') + '" /></div>' +
-    '<div><label class="med-form-label">Indicação Terapêutica</label><input type="text" name="indication" class="w-full px-4 py-2.5 input-outline" value="' + (m.indication || '').replace(/"/g, '&quot;') + '" /></div>' +
+    '<div><label class="med-form-label">Posologia</label><input type="text" name="posology" class="w-full px-4 py-2.5 input-outline" value="' + escapeHtml(m.posology || '') + '" /></div>' +
+    '<div><label class="med-form-label">Indicação Terapêutica</label><input type="text" name="indication" class="w-full px-4 py-2.5 input-outline" value="' + escapeHtml(m.indication || '') + '" /></div>' +
     '</div></section>' +
     '<section class="med-form-section">' +
     '<h3 class="med-form-section-title"><span class="material-icons text-lg">inventory_2</span>Stock e validade</h3>' +
@@ -638,7 +652,7 @@ function viewMedicacaoEditar(params) {
     '</div></section>' +
     '<section class="med-form-section">' +
     '<h3 class="med-form-section-title"><span class="material-icons text-lg">note</span>Notas</h3>' +
-    '<div><label class="med-form-label">Notas</label><textarea name="notes" rows="2" class="w-full px-4 py-2.5 input-outline resize-none">' + (cleanNotesFromLegacy(m.notes || '')).replace(/</g, '&lt;') + '</textarea></div>' +
+    '<div><label class="med-form-label">Notas</label><textarea name="notes" rows="2" class="w-full px-4 py-2.5 input-outline resize-none">' + escapeHtml(cleanNotesFromLegacy(m.notes || '')) + '</textarea></div>' +
     '</section>' +
     '<button type="submit" class="med-form-submit"><span class="material-icons">save</span>Guardar alterações</button></form></main>';
 }
@@ -659,7 +673,7 @@ function viewMedicacaoInteracoes() {
 
 function viewMedicacaoHistorico() {
   const history = getMedicationHistory();
-  const listHtml = history.length === 0 ? '<p class="text-on-surface-variant">Nenhuma toma registada.</p>' : '<ul class="space-y-3">' + history.map(function (h) { return '<li class="p-3 rounded-xl border border-outline flex items-center gap-3"><span class="material-icons text-primary">event</span><div><p class="font-medium">' + (h.medicationName || '').replace(/</g, '&lt;') + '</p><p class="text-sm text-on-surface-variant">' + (h.dateTime || '').replace(/</g, '&lt;') + ' · ' + (h.dosage || '').replace(/</g, '&lt;') + '</p></div></li>'; }).join('') + '</ul>';
+  const listHtml = history.length === 0 ? '<p class="text-on-surface-variant">Nenhuma toma registada.</p>' : '<ul class="space-y-3">' + history.map(function (h) { return '<li class="p-3 rounded-xl border border-outline flex items-center gap-3"><span class="material-icons text-primary">event</span><div><p class="font-medium">' + escapeHtml(h.medicationName || '') + '</p><p class="text-sm text-on-surface-variant">' + escapeHtml(h.dateTime || '') + ' · ' + escapeHtml(h.dosage || '') + '</p></div></li>'; }).join('') + '</ul>';
   return pageHeader('Histórico de Medicação', '#medicacao-armario') +
     '<main class="app-main bg-white">' + listHtml + '</main>';
 }
@@ -667,12 +681,12 @@ function viewMedicacaoHistorico() {
 function viewMedicacaoFolheto(params) {
   const m = getMedicationById(params.id);
   if (!m) return viewMedicacaoCategorias();
-  const nameEsc = (m.name || '').replace(/</g, '&lt;');
-  const dosageEsc = (m.dosage || '-').replace(/</g, '&lt;');
-  const substanceEsc = (m.substance || '-').replace(/</g, '&lt;');
-  const manufacturerEsc = (m.manufacturer || '-').replace(/</g, '&lt;');
-  const posologyEsc = (m.posology || '-').replace(/</g, '&lt;');
-  const indicationEsc = (m.indication || '-').replace(/</g, '&lt;');
+  const nameEsc = escapeHtml(m.name || '');
+  const dosageEsc = escapeHtml(m.dosage || '-');
+  const substanceEsc = escapeHtml(m.substance || '-');
+  const manufacturerEsc = escapeHtml(m.manufacturer || '-');
+  const posologyEsc = escapeHtml(m.posology || '-');
+  const indicationEsc = escapeHtml(m.indication || '-');
   return pageHeader('Folheto informativo', '#medicacao-detalhes?id=' + params.id) +
     '<main class="app-main bg-white space-y-4">' +
     '<section class="leaflet-hero">' +
@@ -713,11 +727,11 @@ function viewChecklistViagem() {
       sec.items.forEach(function (item, idx) {
         const itemId = sec.id + '-' + idx;
         const checked = state[itemId];
-        html += '<label class="flex items-start gap-2 py-1 cursor-pointer checklist-item ' + (checked ? 'done' : '') + '"><input type="checkbox" class="travel-check mt-1" data-id="' + itemId + '"' + (checked ? ' checked' : '') + ' /><span>' + item.replace(/</g, '&lt;') + '</span></label>';
+        html += '<label class="flex items-start gap-2 py-1 cursor-pointer checklist-item ' + (checked ? 'done' : '') + '"><input type="checkbox" class="travel-check mt-1" data-id="' + itemId + '"' + (checked ? ' checked' : '') + ' /><span>' + escapeHtml(item) + '</span></label>';
       });
     } else {
       html += '<ul class="list-disc pl-5 space-y-1">';
-      sec.items.forEach(function (item) { html += '<li>' + item.replace(/</g, '&lt;') + '</li>'; });
+      sec.items.forEach(function (item) { html += '<li>' + escapeHtml(item) + '</li>'; });
       html += '</ul>';
     }
     html += '</section>';
@@ -742,8 +756,8 @@ function viewLembretes() {
     return '<li class="p-4 app-card card-round">' +
       '<div class="flex justify-between items-start gap-3">' +
       '<div>' +
-      '<p class="font-medium">' + (med ? med.name : 'Medicamento').replace(/</g, '&lt;') + '</p>' +
-      '<p class="text-sm text-on-surface-variant">' + (med ? med.dosage : '') + '</p>' +
+      '<p class="font-medium">' + escapeHtml(med ? med.name : 'Medicamento') + '</p>' +
+      '<p class="text-sm text-on-surface-variant">' + escapeHtml(med ? med.dosage : '') + '</p>' +
       (hours ? '<p class="text-xs text-on-surface-variant mt-1">Horários: ' + hours + '</p>' : '') +
       '</div>' +
       '<div class="flex flex-col items-stretch gap-2 min-w-[140px]">' +
@@ -774,7 +788,7 @@ function viewLembretesNovo() {
     ? '<p class="text-xs text-on-surface-variant">Não existem medicamentos ativos. Adiciona primeiro um medicamento.</p>'
     : meds.map(function (m) {
         return '<button type="button" class="med-option flex items-center justify-between w-full px-4 py-3 rounded-xl border border-outline bg-white text-left" data-id="' + m.id + '">' +
-          '<span class="flex flex-col"><span class="text-sm font-medium">' + (m.name || '').replace(/</g, '&lt;') + '</span><span class="text-xs text-on-surface-variant">' + (m.dosage || '').replace(/</g, '&lt;') + '</span></span>' +
+          '<span class="flex flex-col"><span class="text-sm font-medium">' + escapeHtml(m.name || '') + '</span><span class="text-xs text-on-surface-variant">' + escapeHtml(m.dosage || '') + '</span></span>' +
           '<span class="material-icons text-primary text-lg med-check opacity-0">check_circle</span>' +
           '</button>';
       }).join('');
@@ -813,7 +827,7 @@ function viewLembretesEditar(params) {
         return '<button type="button" class="med-option flex items-center justify-between w-full px-4 py-3 rounded-xl border ' +
           (selected ? 'border-primary bg-primary-container' : 'border-outline bg-white') +
           ' text-left" data-id="' + m.id + '">' +
-          '<span class="flex flex-col"><span class="text-sm font-medium">' + (m.name || '').replace(/</g, '&lt;') + '</span><span class="text-xs text-on-surface-variant">' + (m.dosage || '').replace(/</g, '&lt;') + '</span></span>' +
+          '<span class="flex flex-col"><span class="text-sm font-medium">' + escapeHtml(m.name || '') + '</span><span class="text-xs text-on-surface-variant">' + escapeHtml(m.dosage || '') + '</span></span>' +
           '<span class="material-icons text-primary text-lg med-check ' + (selected ? '' : 'opacity-0') + '">check_circle</span>' +
           '</button>';
       }).join('');
@@ -954,20 +968,62 @@ function viewReciclagemHistorico() {
 }
 
 function viewDicas() {
-  const cards = DICAS_ARTIGOS.map(function (a) { return '<a href="#dicas-artigo?id=' + a.id + '" class="block app-card overflow-hidden"><img src="' + a.image + '" alt="" class="w-full h-40 object-cover" /><div class="p-4"><span class="text-xs text-primary font-medium">' + a.category + '</span><h2 class="font-bold mt-1">' + a.title.replace(/</g, '&lt;') + '</h2><p class="text-sm text-on-surface-variant">' + a.readTime + ' min de leitura</p></div></a>'; }).join('');
+  const featured = DICAS_ARTIGOS[0];
+  const cards = DICAS_ARTIGOS.map(function (a) {
+    return '<a href="#dicas-artigo?id=' + a.id + '" class="dicas-card">' +
+      '<div class="dicas-card__media"><img src="' + a.image + '" alt="" /></div>' +
+      '<div class="dicas-card__body">' +
+      '<span class="dicas-chip">' + escapeHtml(a.category) + '</span>' +
+      '<h2>' + escapeHtml(a.title) + '</h2>' +
+      '<p>' + a.readTime + ' min de leitura</p>' +
+      '</div>' +
+      '</a>';
+  }).join('');
   return pageHeader('Dicas de Saúde', null) +
-    '<main class="app-main bg-white"><div class="grid grid-cols-1 gap-4">' +
-    '<a href="#checklist-viagem" class="flex items-center justify-between w-full py-3 px-4 rounded-xl app-card app-card--soft text-primary font-medium"><span class="flex items-center gap-3"><span class="material-icons">flight_takeoff</span><span>Lista de verificação de viagem</span></span><span class="material-icons text-gray-500">chevron_right</span></a>' +
-    cards + '</div></main>';
+    '<main class="app-main bg-white">' +
+    '<section class="dicas-hero">' +
+    '<div>' +
+    '<p class="dicas-kicker">Guia rápido</p>' +
+    '<h2>Cuida da tua saúde com informação simples e prática.</h2>' +
+    '<p>Seleciona um tema e guarda as dicas úteis para o teu dia a dia.</p>' +
+    '</div>' +
+    '<span class="material-icons">favorite</span>' +
+    '</section>' +
+    '<section class="dicas-actions">' +
+    '<a href="#checklist-viagem" class="dicas-action">' +
+    '<div><span class="material-icons">flight_takeoff</span><span>Checklist de viagem</span></div>' +
+    '<span class="material-icons dicas-action__arrow">chevron_right</span>' +
+    '</a>' +
+    '</section>' +
+    (featured ? '<section class="dicas-featured">' +
+      '<a href="#dicas-artigo?id=' + featured.id + '" class="dicas-featured__card">' +
+      '<div class="dicas-featured__media"><img src="' + featured.image + '" alt="" /></div>' +
+      '<div class="dicas-featured__body">' +
+      '<span class="dicas-chip dicas-chip--light">' + escapeHtml(featured.category) + '</span>' +
+      '<h3>' + escapeHtml(featured.title) + '</h3>' +
+      '<p>' + featured.readTime + ' min de leitura</p>' +
+      '</div>' +
+      '</a>' +
+      '</section>' : '') +
+    '<section class="dicas-grid">' + cards + '</section>' +
+    '</main>';
 }
 
 function viewDicasArtigo(params) {
   const a = DICAS_ARTIGOS.find(function (x) { return x.id === params.id; });
   if (!a) return viewDicas();
   const paragraphs = a.text.split(/\n\n+/).filter(Boolean);
-  const body = paragraphs.map(function (p) { return '<p class="mb-3">' + p.replace(/</g, '&lt;') + '</p>'; }).join('');
+  const body = paragraphs.map(function (p) { return '<p>' + escapeHtml(p) + '</p>'; }).join('');
   return pageHeader('', '#dicas') +
-    '<main class="app-main bg-white"><img src="' + a.image + '" alt="" class="w-full -mt-2 rounded-t-xl object-cover h-48" /><div class="p-4 -mt-2 rounded-t-2xl"><span class="text-xs text-primary font-medium">' + a.category + '</span><p class="text-sm text-on-surface-variant">' + a.publishedAt + ' · ' + a.readTime + ' min</p><h1 class="text-xl font-bold mt-2 text-black">' + a.title.replace(/</g, '&lt;') + '</h1><div class="prose prose-sm mt-4 max-w-none">' + body + '</div></div></main>';
+    '<main class="app-main bg-white dicas-article">' +
+    '<div class="dicas-article__media"><img src="' + a.image + '" alt="" /></div>' +
+    '<div class="dicas-article__content">' +
+    '<span class="dicas-chip">' + escapeHtml(a.category) + '</span>' +
+    '<p class="dicas-meta">' + escapeHtml(a.publishedAt) + ' · ' + a.readTime + ' min</p>' +
+    '<h1>' + escapeHtml(a.title) + '</h1>' +
+    '<div class="dicas-body">' + body + '</div>' +
+    '</div>' +
+    '</main>';
 }
 
 function viewDefinicoes() {
@@ -1029,19 +1085,18 @@ function afterRender(path, params) {
   var armarioSearch = document.getElementById('armario-search');
   if (armarioSearch) {
     var currentParams = parseHash().params;
-    armarioSearch.addEventListener('input', function () {
+    var onSearchInput = debounce(function () {
       var q = armarioSearch.value.trim();
-      var np = { filter: currentParams.filter, cat: currentParams.cat };
-      if (q) np.q = q;
+      var np = compactParams({ filter: currentParams.filter, cat: currentParams.cat, q: q });
       navigate('medicacao-armario', np);
-    });
+    }, 250);
+    armarioSearch.addEventListener('input', onSearchInput);
   }
   var armarioFilter = document.getElementById('armario-filter');
   if (armarioFilter) {
     var currentParamsFilter = parseHash().params;
     armarioFilter.addEventListener('change', function () {
-      var np = { cat: currentParamsFilter.cat, filter: armarioFilter.value };
-      if (currentParamsFilter.q) np.q = currentParamsFilter.q;
+      var np = compactParams({ cat: currentParamsFilter.cat, filter: armarioFilter.value, q: currentParamsFilter.q });
       navigate('medicacao-armario', np);
     });
   }
@@ -1059,11 +1114,11 @@ function afterRender(path, params) {
         var results = searchInfomed(q, 10);
         acList.innerHTML = results.map(function (item) {
           var d = getItemDisplay(item);
-          var name = (d.name || '').replace(/"/g, '&quot;');
-          var dosage = (d.dosage || '').replace(/"/g, '&quot;');
-          var substance = (d.substance || '').replace(/"/g, '&quot;');
-          var titular = (d.titular || '').replace(/"/g, '&quot;');
-          return '<li class="px-4 py-2 cursor-pointer border-b border-outline last:border-0" data-name="' + name + '" data-dosage="' + dosage + '" data-substance="' + substance + '" data-manufacturer="' + titular + '">' + (d.name || '').replace(/</g, '&lt;') + ' · ' + (d.dosage || '').replace(/</g, '&lt;') + '</li>';
+          var name = escapeHtml(d.name || '');
+          var dosage = escapeHtml(d.dosage || '');
+          var substance = escapeHtml(d.substance || '');
+          var titular = escapeHtml(d.titular || '');
+          return '<li class="px-4 py-2 cursor-pointer border-b border-outline last:border-0" data-name="' + name + '" data-dosage="' + dosage + '" data-substance="' + substance + '" data-manufacturer="' + titular + '">' + escapeHtml(d.name || '') + ' · ' + escapeHtml(d.dosage || '') + '</li>';
         }).join('');
         acList.classList.toggle('hidden', !results.length);
       });
@@ -1224,38 +1279,40 @@ function afterRender(path, params) {
       return;
     }
 
-    function timeToMinutes(t) {
+    var timeToMinutes = Core && Core.timeToMinutes ? Core.timeToMinutes : function (t) {
       var parts = (t || '').split(':');
       var h = parseInt(parts[0] || '0', 10);
       var m = parseInt(parts[1] || '0', 10);
       return h * 60 + m;
-    }
+    };
 
-    function minutesToTime(min) {
+    var minutesToTime = Core && Core.minutesToTime ? Core.minutesToTime : function (min) {
       var h = Math.floor(min / 60);
       var m = min % 60;
       return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
-    }
+    };
 
     function getPeriodById(id) {
       return PERIODOS.find(function (p) { return p.id === id; }) || PERIODOS[0];
     }
 
-    var activePeriodId = (function () {
-      if (options.initialTimes && options.initialTimes.length) {
-        var t0 = options.initialTimes[0];
-        var baseMin = timeToMinutes(t0);
-        for (var i = 0; i < PERIODOS.length; i++) {
-          var p = PERIODOS[i];
-          if (!p.start || !p.end) continue;
-          var s = timeToMinutes(p.start);
-          var e = timeToMinutes(p.end);
-          if (baseMin >= s && baseMin <= e) return p.id;
-        }
-      }
-      var firstBtn = periodBtns[0];
-      return firstBtn ? firstBtn.dataset.id : (PERIODOS[0] && PERIODOS[0].id);
-    })();
+    var activePeriodId = (Core && Core.pickPeriodId)
+      ? Core.pickPeriodId(options.initialTimes, PERIODOS)
+      : (function () {
+          if (options.initialTimes && options.initialTimes.length) {
+            var t0 = options.initialTimes[0];
+            var baseMin = timeToMinutes(t0);
+            for (var i = 0; i < PERIODOS.length; i++) {
+              var p = PERIODOS[i];
+              if (!p.start || !p.end) continue;
+              var s = timeToMinutes(p.start);
+              var e = timeToMinutes(p.end);
+              if (baseMin >= s && baseMin <= e) return p.id;
+            }
+          }
+          var firstBtn = periodBtns[0];
+          return firstBtn ? firstBtn.dataset.id : (PERIODOS[0] && PERIODOS[0].id);
+        })();
 
     function updatePeriodHighlight() {
       periodBtns.forEach(function (btn) {
@@ -1277,11 +1334,18 @@ function afterRender(path, params) {
         timeGrid.innerHTML = '';
         return;
       }
-      var startMin = timeToMinutes(period.start);
-      var endMin = timeToMinutes(period.end);
       var html = '';
-      for (var m = startMin; m <= endMin; m += 30) {
-        var t = minutesToTime(m);
+      var slots = (Core && Core.buildTimeGrid)
+        ? Core.buildTimeGrid(period.start, period.end, 30)
+        : (function () {
+            var startMin = timeToMinutes(period.start);
+            var endMin = timeToMinutes(period.end);
+            var list = [];
+            for (var m = startMin; m <= endMin; m += 30) list.push(minutesToTime(m));
+            return list;
+          })();
+      for (var i = 0; i < slots.length; i++) {
+        var t = slots[i];
         var selected = selectedTimes.indexOf(t) !== -1;
         html += '<button type="button" class="time-chip px-3 py-1.5 rounded-full text-xs font-medium border ' +
           (selected ? 'border-primary bg-primary text-on-primary' : 'border-outline bg-white text-black') +
@@ -1303,15 +1367,24 @@ function afterRender(path, params) {
       if (!chip) return;
       var t = chip.dataset.time;
       if (!t) return;
-      var idx = selectedTimes.indexOf(t);
-      if (idx !== -1) {
-        selectedTimes.splice(idx, 1);
-      } else {
-        if (selectedTimes.length >= 3) {
+      if (Core && Core.toggleTimeSelection) {
+        var res = Core.toggleTimeSelection(selectedTimes, t, 3);
+        selectedTimes = res.times;
+        if (res.exceeded) {
           alert('Só podes selecionar até 3 horários distintos.');
           return;
         }
-        selectedTimes.push(t);
+      } else {
+        var idx = selectedTimes.indexOf(t);
+        if (idx !== -1) {
+          selectedTimes.splice(idx, 1);
+        } else {
+          if (selectedTimes.length >= 3) {
+            alert('Só podes selecionar até 3 horários distintos.');
+            return;
+          }
+          selectedTimes.push(t);
+        }
       }
       renderTimeGrid();
     });
@@ -1506,7 +1579,7 @@ function afterRender(path, params) {
             '&dosagem=' + encodeURIComponent(d.dosage) +
             '&substancia=' + encodeURIComponent(d.substance) +
             '&titular=' + encodeURIComponent(d.titular || '');
-          return '<li><a href="' + goto + '" class="block p-3 rounded-xl border border-outline hover:bg-primary-container">' + (d.name || '').replace(/</g, '&lt;') + ' · ' + (d.dosage || '').replace(/</g, '&lt;') + '</a></li>';
+          return '<li><a href="' + goto + '" class="block p-3 rounded-xl border border-outline hover:bg-primary-container">' + escapeHtml(d.name || '') + ' · ' + escapeHtml(d.dosage || '') + '</a></li>';
         }).join('');
       });
     });
@@ -1617,7 +1690,7 @@ function initRecyclingMap() {
 
   function geocodeAddress(address) {
     if (!address) return Promise.resolve(null);
-    var url = 'https://nominatim.openstreetmap.org/search?format=json&q=' + encodeURIComponent(address);
+    var url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&addressdetails=0&q=' + encodeURIComponent(address);
     return fetch(url, { headers: { 'Accept-Language': 'pt-PT' } })
       .then(function (r) { return r.json(); })
       .then(function (data) {
@@ -1649,10 +1722,29 @@ function initRecyclingMap() {
   }
 
   async function geocodeAllPoints() {
+    if (geocodeAllPoints._done) return;
     setStatus('A localizar pontos…');
+    var updated = false;
+    RECYCLING_POINTS.forEach(function (p) {
+      if (!p.address || (typeof p.lat === 'number' && typeof p.lng === 'number')) return;
+      var cached = getCachedCoords(p.address);
+      if (cached) {
+        p.lat = cached.lat;
+        p.lng = cached.lng;
+        updated = true;
+      }
+    });
+    if (updated) renderAll(RECYCLING_POINTS);
+    var allDone = RECYCLING_POINTS.every(function (p) { return typeof p.lat === 'number' && typeof p.lng === 'number'; });
+    if (allDone) {
+      setStatus('');
+      geocodeAllPoints._done = true;
+      return;
+    }
     for (var i = 0; i < RECYCLING_POINTS.length; i += 1) {
       var p = RECYCLING_POINTS[i];
       if (!p.address) continue;
+      if (typeof p.lat === 'number' && typeof p.lng === 'number') continue;
       var cached = getCachedCoords(p.address);
       var coords = cached || await geocodeAddress(p.address);
       if (coords && !Number.isNaN(coords.lat) && !Number.isNaN(coords.lng)) {
@@ -1663,6 +1755,7 @@ function initRecyclingMap() {
       await sleep(1000);
     }
     setStatus('');
+    geocodeAllPoints._done = true;
   }
 
   function requestLocation(showBusy) {
@@ -1771,17 +1864,17 @@ function showInteractionsModal(detected, onClose) {
 
 function showMedicationDetailModal(m) {
   if (!m) return;
-  var nameEsc = (m.name || '').replace(/</g, '&lt;');
-  var dosageEsc = (m.dosage || '-').replace(/</g, '&lt;');
-  var substanceEsc = (m.substance || '-').replace(/</g, '&lt;');
-  var manufacturerEsc = (m.manufacturer || '-').replace(/</g, '&lt;');
-  var validityEsc = (formatDateYMD(m.expiryDate) || '-').replace(/</g, '&lt;');
-  var categoryEsc = (m.category || '-').replace(/</g, '&lt;');
+  var nameEsc = escapeHtml(m.name || '');
+  var dosageEsc = escapeHtml(m.dosage || '-');
+  var substanceEsc = escapeHtml(m.substance || '-');
+  var manufacturerEsc = escapeHtml(m.manufacturer || '-');
+  var validityEsc = escapeHtml(formatDateYMD(m.expiryDate) || '-');
+  var categoryEsc = escapeHtml(m.category || '-');
   var stateStr = m.isActive ? 'Ativo' : 'Inativo';
-  var posologyEsc = (m.posology || '-').replace(/</g, '&lt;');
-  var indicationEsc = (m.indication || '-').replace(/</g, '&lt;');
-  var notesEsc = (cleanNotesFromLegacy(m.notes) || '-').replace(/</g, '&lt;');
-  var imgBlock = m.imageUri ? '<img src="' + m.imageUri.replace(/"/g, '&quot;') + '" alt="" class="w-full max-h-40 object-contain rounded-xl bg-gray-100" />' : '';
+  var posologyEsc = escapeHtml(m.posology || '-');
+  var indicationEsc = escapeHtml(m.indication || '-');
+  var notesEsc = escapeHtml(cleanNotesFromLegacy(m.notes) || '-');
+  var imgBlock = m.imageUri ? '<img src="' + escapeHtml(m.imageUri) + '" alt="" class="w-full max-h-40 object-contain rounded-xl bg-gray-100" />' : '';
   var body = '<div id="modal-med-detail" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">' +
     '<div class="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-hidden shadow-xl border border-gray-100">' +
     '<div class="modal-med-header text-on-primary px-4 py-3 flex items-center justify-between">' +

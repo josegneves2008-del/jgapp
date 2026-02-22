@@ -93,30 +93,12 @@ var KNOWN_INTERACTIONS = [
   { id: 'xarelto-brufen', severity: 'moderada', color: '#2E7D32', drug1: ['xarelto', 'rivaroxabano'], drug2: ['brufen', 'ibuprofeno'], combination: 'Xarelto/Rivaroxabano + Brufen/Ibuprofeno', mechanism: 'O ibuprofeno (AINE) pode induzir erosão gástrica e inibição plaquetária. A associação com rivaroxabano (anticoagulante) aumenta o risco de hemorragias.' }
 ];
 
-function getSearchableText(med) {
-  var name = (med.name || '').toLowerCase();
-  var substance = (med.substance || '').toLowerCase();
-  return (name + ' ' + substance).trim();
-}
-
-function textContainsAnyKeywords(text, keywords) {
-  return keywords.some(function (k) { return text.includes(k); });
-}
-
 function detectInteractions(medications) {
   var list = Array.isArray(medications) ? medications : getMedications();
-  var detected = [];
-  for (var i = 0; i < KNOWN_INTERACTIONS.length; i++) {
-    var interaction = KNOWN_INTERACTIONS[i];
-    var has1 = false, has2 = false;
-    for (var j = 0; j < list.length; j++) {
-      var text = getSearchableText(list[j]);
-      if (textContainsAnyKeywords(text, interaction.drug1)) has1 = true;
-      if (textContainsAnyKeywords(text, interaction.drug2)) has2 = true;
-    }
-    if (has1 && has2) detected.push(interaction);
+  if (typeof DailyMedCore !== 'undefined' && DailyMedCore.detectInteractions) {
+    return DailyMedCore.detectInteractions(list, KNOWN_INTERACTIONS);
   }
-  return detected;
+  return [];
 }
 
 function getKnownInteractions() {
