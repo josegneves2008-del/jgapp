@@ -1,4 +1,9 @@
-const { describe, it, expect } = require('vitest');
+// O Vitest só pode ser importado com "import"; o core.js continua a ser
+// carregado como CommonJS (é o mesmo ficheiro usado no browser).
+import { describe, it, expect } from 'vitest';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
 const core = require('../js/core.js');
 
 describe('core utilities', () => {
