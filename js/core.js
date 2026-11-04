@@ -169,6 +169,74 @@
     return { inReview: false, label: '', severityLabel: '', note: '' };
   }
 
+  // Cores definidas aqui, nunca lidas dos dados: o campo "color" das regras é ignorado.
+  // Uma regra em revisão fica sempre a cinzento, para não sugerir uma gravidade confirmada.
+  var INTERACTION_TONES = {
+    grave: '#B3261E',
+    moderada: '#E65100',
+    ligeira: '#F9A825',
+    revisao: '#757575',
+    desconhecida: '#757575',
+  };
+
+  /**
+   * Como apresentar uma regra de interação.
+   * Estados: 'em_revisao' (texto retirado, gravidade por confirmar),
+   * 'validada' (revista por um farmacêutico) e 'por_validar' (por omissão: tem texto, mas ninguém o validou).
+   */
+  function interactionDisplay(interaction) {
+    var i = interaction || {};
+    var rev = interactionReviewInfo(i);
+    if (rev.inReview) {
+      return {
+        status: 'em_revisao', statusLabel: rev.label, severityLabel: rev.severityLabel,
+        color: INTERACTION_TONES.revisao, showMechanism: false, note: rev.note,
+      };
+    }
+    var sev = Object.prototype.hasOwnProperty.call(INTERACTION_TONES, i.severity) && i.severity !== 'revisao' ? i.severity : 'desconhecida';
+    var validated = i.reviewStatus === 'validada';
+    return {
+      status: validated ? 'validada' : 'por_validar',
+      statusLabel: validated ? 'Validada por farmacêutico' : 'Texto por validar',
+      severityLabel: sev === 'desconhecida' ? 'Gravidade não indicada' : 'Gravidade indicada: ' + sev,
+      color: INTERACTION_TONES[sev],
+      showMechanism: !!i.mechanism,
+      note: validated ? '' : 'Esta descrição ainda não foi revista por um farmacêutico.',
+    };
+  }
+
+  /** Separa as combinações encontradas: com descrição vs. regras em revisão (gravidade por confirmar). */
+  function groupDetectedInteractions(detected) {
+    var list = Array.isArray(detected) ? detected : [];
+    var described = [], inReview = [];
+    for (var k = 0; k < list.length; k++) {
+      if (interactionReviewInfo(list[k]).inReview) inReview.push(list[k]); else described.push(list[k]);
+    }
+    return { described: described, inReview: inReview };
+  }
+
+  /** HTML de um cartão de regra. Todo o texto passa por escapeHtml; a cor vem de INTERACTION_TONES. */
+  function renderInteractionItem(interaction, variant) {
+    var i = interaction || {};
+    var d = interactionDisplay(i);
+    var cls = variant === 'compact' ? 'p-2 rounded border border-outline' : 'p-3 rounded-xl border border-outline';
+    var badge = d.status === 'em_revisao'
+      ? '<span class="material-icons text-base align-middle" aria-hidden="true">pending</span> '
+      : '';
+    return '<li class="' + cls + '" style="border-left-width:4px;border-left-style:solid;border-left-color:' + d.color + '"' +
+      ' data-interaction="' + escapeHtml(i.id) + '" data-status="' + d.status + '"' +
+      (d.status === 'em_revisao' ? ' data-review="em_revisao"' : '') + '>' +
+      '<p class="font-medium">' + escapeHtml(i.combination) + '</p>' +
+      '<p class="interaction-status text-sm font-semibold mt-1">' + badge + escapeHtml(d.statusLabel) + '</p>' +
+      '<p class="interaction-severity text-sm">' + escapeHtml(d.severityLabel) + '</p>' +
+      (d.showMechanism ? '<p class="text-sm mt-1">' + escapeHtml(i.mechanism) + '</p>' : '') +
+      (d.note ? '<p class="interaction-note text-sm mt-1">' + escapeHtml(d.note) + '</p>' : '') +
+      '</li>';
+  }
+
+  var REVIEW_MATCH_TEXT = 'Encontrámos no teu armário uma combinação cuja regra a app ainda está a rever. ' +
+    'Isto não confirma nem exclui uma interação. Fala com o teu farmacêutico antes de tomares estes medicamentos juntos.';
+
   function detectInteractions(medications, knownInteractions) {
     var list = Array.isArray(medications) ? medications : [];
     var interactions = Array.isArray(knownInteractions) ? knownInteractions : [];
@@ -203,6 +271,11 @@
     detectInteractions: detectInteractions,
     interactionCheckTexts: interactionCheckTexts,
     interactionReviewInfo: interactionReviewInfo,
+    interactionDisplay: interactionDisplay,
+    groupDetectedInteractions: groupDetectedInteractions,
+    renderInteractionItem: renderInteractionItem,
+    INTERACTION_TONES: INTERACTION_TONES,
+    REVIEW_MATCH_TEXT: REVIEW_MATCH_TEXT,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = core;

@@ -827,24 +827,28 @@ function viewMedicacaoInteracoes() {
   const detected = detectInteractions();
   const known = getKnownInteractions();
   const texts = DailyMedCore.interactionCheckTexts(known.length);
-  // Cartão de uma regra: as regras "em revisão" não mostram gravidade nem descrição por validar.
-  function interactionItem(i, cls, style) {
-    const rev = DailyMedCore.interactionReviewInfo(i);
-    const severity = rev.inReview ? rev.severityLabel : (i.severity || '');
-    return '<li class="' + cls + '" style="' + style + '" data-interaction="' + escapeHtml(i.id) + '"' + (rev.inReview ? ' data-review="em_revisao"' : '') + '>' +
-      '<p class="font-medium">' + escapeHtml(i.combination) + '</p>' +
-      (rev.inReview ? '<p class="interaction-review text-sm font-semibold mt-1"><span class="material-icons text-base align-middle" aria-hidden="true">pending</span> ' + escapeHtml(rev.label) + '</p>' : '') +
-      '<p class="text-sm' + (rev.inReview ? '' : ' capitalize') + '">' + escapeHtml(severity) + '</p>' +
-      (rev.inReview ? '<p class="text-sm mt-1">' + escapeHtml(rev.note) + '</p>' : (i.mechanism ? '<p class="text-sm mt-1">' + escapeHtml(i.mechanism) + '</p>' : '')) +
-      '</li>';
+  // As regras em revisão não aparecem como interações detetadas: ficam numa secção própria,
+  // a cinzento, com "Gravidade por confirmar". Cores e escape tratados em DailyMedCore.renderInteractionItem.
+  const groups = DailyMedCore.groupDetectedInteractions(detected);
+  const item = function (i) { return DailyMedCore.renderInteractionItem(i); };
+  let detHtml;
+  if (detected.length === 0) {
+    detHtml = '<p class="text-on-surface-variant" id="interactions-empty">' + escapeHtml(texts.emptyMessage) + '</p>';
+  } else if (groups.described.length === 0) {
+    detHtml = '<p class="text-on-surface-variant" id="interactions-none-described">Nenhuma combinação com descrição foi encontrada. Vê abaixo a combinação a confirmar.</p>';
+  } else {
+    detHtml = '<ul class="space-y-3" id="interactions-detected">' + groups.described.map(item).join('') + '</ul>';
   }
-  let detHtml = detected.length === 0 ? '<p class="text-on-surface-variant" id="interactions-empty">' + escapeHtml(texts.emptyMessage) + '</p>' : '<ul class="space-y-3">' + detected.map(function (i) { return interactionItem(i, 'p-3 rounded-xl border-l-4', 'border-color:' + i.color); }).join('') + '</ul>';
-  let knownHtml = '<ul class="space-y-3">' + known.map(function (i) { return interactionItem(i, 'p-3 rounded-xl border border-outline', 'border-left-width:4px;border-left-color:' + i.color); }).join('') + '</ul>';
+  const reviewHtml = groups.inReview.length === 0 ? '' :
+    '<section id="interactions-review" aria-labelledby="interactions-review-title"><h2 class="font-bold text-lg mb-2" id="interactions-review-title">A confirmar com o farmacêutico</h2>' +
+    '<p class="text-sm mb-3">' + escapeHtml(DailyMedCore.REVIEW_MATCH_TEXT) + '</p>' +
+    '<ul class="space-y-3">' + groups.inReview.map(item).join('') + '</ul></section>';
+  let knownHtml = '<ul class="space-y-3" id="interactions-known">' + known.map(item).join('') + '</ul>';
   const notice = '<section class="interaction-limit-notice p-4 rounded-xl border border-yellow-300 bg-yellow-50 text-black" role="note" id="interactions-limit-notice">' +
     '<p class="font-semibold flex items-center gap-2"><span class="material-icons" aria-hidden="true">info</span>Lista limitada</p>' +
     '<p class="text-sm mt-1">' + escapeHtml(texts.limitNotice) + '</p></section>';
   return pageHeader('Interações Medicamentosas', '#medicacao-armario') +
-    '<main class="app-main space-y-6 bg-white">' + notice + '<section><h2 class="font-bold text-lg mb-2">Interações detetadas no teu armário</h2>' + detHtml + '</section><section><h2 class="font-bold text-lg mb-2">Interações que a app verifica</h2>' + knownHtml + '</section></main>';
+    '<main class="app-main space-y-6 bg-white">' + notice + '<section><h2 class="font-bold text-lg mb-2">Interações detetadas no teu armário</h2>' + detHtml + '</section>' + reviewHtml + '<section><h2 class="font-bold text-lg mb-2">Combinações que a app verifica</h2>' + knownHtml + '</section></main>';
 }
 
 function viewMedicacaoHistorico() {
@@ -2077,8 +2081,19 @@ function showAddMedicationModal() {
 }
 
 function showInteractionsModal(detected, onClose) {
-  var listHtml = detected.map(function (i) { return '<li class="p-2 rounded border-l-4" style="border-color:' + i.color + '"><p class="font-medium text-sm">' + i.combination + '</p><p class="text-xs">' + i.mechanism + '</p></li>'; }).join('');
-  var html = '<div id="modal-overlay" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div class="bg-white rounded-2xl max-w-md w-full max-h-[80vh] overflow-y-auto p-4"><h3 class="font-bold text-lg mb-2">Interações detetadas</h3><p class="text-sm text-on-surface-variant mb-4">Consulte um profissional de saúde.</p><ul class="space-y-2 mb-4">' + listHtml + '</ul><button type="button" id="modal-close-btn" class="btn-primary w-full">Entendi</button></div></div>';
+  // Mesmo cartão do ecrã de interações: texto escapado, cor interna, regras em revisão à parte.
+  var groups = DailyMedCore.groupDetectedInteractions(detected);
+  var render = function (i) { return DailyMedCore.renderInteractionItem(i, 'compact'); };
+  var body = '';
+  if (groups.described.length > 0) {
+    body += '<ul class="space-y-2 mb-4" id="modal-interactions-detected">' + groups.described.map(render).join('') + '</ul>';
+  }
+  if (groups.inReview.length > 0) {
+    body += '<h4 class="font-semibold mb-1">A confirmar com o farmacêutico</h4><p class="text-sm mb-2">' + escapeHtml(DailyMedCore.REVIEW_MATCH_TEXT) + '</p>' +
+      '<ul class="space-y-2 mb-4" id="modal-interactions-review">' + groups.inReview.map(render).join('') + '</ul>';
+  }
+  var title = groups.described.length > 0 ? 'Interações detetadas' : 'Combinação a confirmar';
+  var html = '<div id="modal-overlay" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div class="bg-white rounded-2xl max-w-md w-full max-h-[80vh] overflow-y-auto p-4"><h3 class="font-bold text-lg mb-2" id="modal-interactions-title">' + title + '</h3><p class="text-sm text-on-surface-variant mb-4">Consulte um profissional de saúde.</p>' + body + '<button type="button" id="modal-close-btn" class="btn-primary w-full">Entendi</button></div></div>';
   document.body.insertAdjacentHTML('beforeend', html);
   setTimeout(function () {
     var primary = document.getElementById('modal-close-btn');
