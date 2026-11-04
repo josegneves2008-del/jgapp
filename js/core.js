@@ -141,6 +141,34 @@
     return Array.isArray(keywords) && keywords.some(function (k) { return text.includes(k); });
   }
 
+  /**
+   * Textos do ecrã de interações. A lista de regras é limitada, por isso
+   * uma lista vazia nunca é apresentada como garantia de segurança.
+   */
+  function interactionCheckTexts(knownCount) {
+    var n = Number(knownCount) || 0;
+    var regras = n === 1 ? '1 combinação' : n + ' combinações';
+    return {
+      limitNotice: 'Verificação limitada: a app só conhece ' + regras + ' de medicamentos. ' +
+        'Não encontrar uma interação aqui não significa que ela não exista. ' +
+        'Antes de juntares medicamentos, fala com o teu farmacêutico ou médico.',
+      emptyMessage: 'Nenhuma das ' + regras + ' que a app conhece foi encontrada no teu armário.',
+    };
+  }
+
+  /** Estado de revisão de uma regra de interação (ex.: texto retirado por estar incorreto). */
+  function interactionReviewInfo(interaction) {
+    if (interaction && interaction.reviewStatus === 'em_revisao') {
+      return {
+        inReview: true,
+        label: 'Em revisão',
+        severityLabel: 'Gravidade por confirmar',
+        note: interaction.reviewNote || 'Esta regra está a aguardar validação por um farmacêutico.',
+      };
+    }
+    return { inReview: false, label: '', severityLabel: '', note: '' };
+  }
+
   function detectInteractions(medications, knownInteractions) {
     var list = Array.isArray(medications) ? medications : [];
     var interactions = Array.isArray(knownInteractions) ? knownInteractions : [];
@@ -173,6 +201,8 @@
     getSearchableText: getSearchableText,
     textContainsAnyKeywords: textContainsAnyKeywords,
     detectInteractions: detectInteractions,
+    interactionCheckTexts: interactionCheckTexts,
+    interactionReviewInfo: interactionReviewInfo,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = core;

@@ -776,7 +776,7 @@ function viewMedicacaoDetalhes(params) {
     '</section>' +
     '<section class="med-actions">' +
     '<a href="#medicacao-editar?id=' + m.id + '" class="btn-primary w-full">Editar</a>' +
-    '<a href="#medicacao-folheto?id=' + m.id + '" class="btn-outline w-full">Ver folheto</a>' +
+    '<a href="#medicacao-folheto?id=' + m.id + '" class="btn-outline w-full">Ver a minha ficha</a>' +
     '<a href="#medicacao-interacoes" class="btn-ghost w-full">Ver interações</a>' +
     '<a href="#medicacao-historico" class="btn-ghost w-full">Ver histórico</a>' +
     '</section>' +
@@ -826,10 +826,25 @@ function viewMedicacaoPesquisar() {
 function viewMedicacaoInteracoes() {
   const detected = detectInteractions();
   const known = getKnownInteractions();
-  let detHtml = detected.length === 0 ? '<p class="text-on-surface-variant">Nenhuma interação detetada.</p>' : '<ul class="space-y-3">' + detected.map(function (i) { return '<li class="p-3 rounded-xl border-l-4" style="border-color:' + i.color + '"><p class="font-medium">' + i.combination + '</p><p class="text-sm capitalize">' + i.severity + '</p><p class="text-sm mt-1">' + i.mechanism + '</p></li>'; }).join('') + '</ul>';
-  let knownHtml = '<ul class="space-y-3">' + known.map(function (i) { return '<li class="p-3 rounded-xl border border-outline" style="border-left-width:4px;border-left-color:' + i.color + '"><p class="font-medium">' + i.combination + '</p><p class="text-sm capitalize">' + i.severity + '</p><p class="text-sm mt-1">' + i.mechanism + '</p></li>'; }).join('') + '</ul>';
+  const texts = DailyMedCore.interactionCheckTexts(known.length);
+  // Cartão de uma regra: as regras "em revisão" não mostram gravidade nem descrição por validar.
+  function interactionItem(i, cls, style) {
+    const rev = DailyMedCore.interactionReviewInfo(i);
+    const severity = rev.inReview ? rev.severityLabel : (i.severity || '');
+    return '<li class="' + cls + '" style="' + style + '" data-interaction="' + escapeHtml(i.id) + '"' + (rev.inReview ? ' data-review="em_revisao"' : '') + '>' +
+      '<p class="font-medium">' + escapeHtml(i.combination) + '</p>' +
+      (rev.inReview ? '<p class="interaction-review text-sm font-semibold mt-1"><span class="material-icons text-base align-middle" aria-hidden="true">pending</span> ' + escapeHtml(rev.label) + '</p>' : '') +
+      '<p class="text-sm' + (rev.inReview ? '' : ' capitalize') + '">' + escapeHtml(severity) + '</p>' +
+      (rev.inReview ? '<p class="text-sm mt-1">' + escapeHtml(rev.note) + '</p>' : (i.mechanism ? '<p class="text-sm mt-1">' + escapeHtml(i.mechanism) + '</p>' : '')) +
+      '</li>';
+  }
+  let detHtml = detected.length === 0 ? '<p class="text-on-surface-variant" id="interactions-empty">' + escapeHtml(texts.emptyMessage) + '</p>' : '<ul class="space-y-3">' + detected.map(function (i) { return interactionItem(i, 'p-3 rounded-xl border-l-4', 'border-color:' + i.color); }).join('') + '</ul>';
+  let knownHtml = '<ul class="space-y-3">' + known.map(function (i) { return interactionItem(i, 'p-3 rounded-xl border border-outline', 'border-left-width:4px;border-left-color:' + i.color); }).join('') + '</ul>';
+  const notice = '<section class="interaction-limit-notice p-4 rounded-xl border border-yellow-300 bg-yellow-50 text-black" role="note" id="interactions-limit-notice">' +
+    '<p class="font-semibold flex items-center gap-2"><span class="material-icons" aria-hidden="true">info</span>Lista limitada</p>' +
+    '<p class="text-sm mt-1">' + escapeHtml(texts.limitNotice) + '</p></section>';
   return pageHeader('Interações Medicamentosas', '#medicacao-armario') +
-    '<main class="app-main space-y-6 bg-white"><section><h2 class="font-bold text-lg mb-2">Interações detetadas no teu armário</h2>' + detHtml + '</section><section><h2 class="font-bold text-lg mb-2">Interações que a app verifica</h2>' + knownHtml + '</section></main>';
+    '<main class="app-main space-y-6 bg-white">' + notice + '<section><h2 class="font-bold text-lg mb-2">Interações detetadas no teu armário</h2>' + detHtml + '</section><section><h2 class="font-bold text-lg mb-2">Interações que a app verifica</h2>' + knownHtml + '</section></main>';
 }
 
 function viewMedicacaoHistorico() {
@@ -848,11 +863,13 @@ function viewMedicacaoFolheto(params) {
   const manufacturerEsc = escapeHtml(m.manufacturer || '-');
   const posologyEsc = escapeHtml(m.posology || '-');
   const indicationEsc = escapeHtml(m.indication || '-');
-  return pageHeader('Folheto informativo', '#medicacao-detalhes?id=' + params.id) +
+  // A rota mantém o nome "medicacao-folheto" para não partir ligações, mas o conteúdo
+  // são dados introduzidos pelo utilizador, não o folheto oficial do medicamento.
+  return pageHeader('A minha ficha', '#medicacao-detalhes?id=' + params.id) +
     '<main class="app-main bg-white space-y-4">' +
     '<section class="leaflet-hero">' +
     '<div>' +
-    '<p class="leaflet-kicker">Folheto</p>' +
+    '<p class="leaflet-kicker">Dados introduzidos por ti</p>' +
     '<h2 class="leaflet-title">' + nameEsc + '</h2>' +
     '<p class="leaflet-sub">' + dosageEsc + '</p>' +
     '</div>' +
@@ -874,7 +891,7 @@ function viewMedicacaoFolheto(params) {
     '</section>' +
     '<section class="leaflet-note">' +
     '<span class="material-icons">info</span>' +
-    '<p>Consulta sempre o folheto da embalagem ou o teu médico/farmacêutico para informações completas.</p>' +
+    '<p id="ficha-aviso">Esta ficha mostra apenas os dados que introduziste e não substitui o folheto oficial do medicamento. Consulta sempre o folheto da embalagem ou o teu médico/farmacêutico para informações completas.</p>' +
     '</section>' +
     '</main>';
 }
@@ -2106,7 +2123,7 @@ function showMedicationDetailModal(m) {
     '</dl>' +
     '<div class="flex flex-wrap gap-2 mt-4">' +
     '<a href="#medicacao-editar?id=' + m.id + '" class="modal-med-link btn-primary"><span class="material-icons text-base">edit</span>Editar</a>' +
-    '<a href="#medicacao-folheto?id=' + m.id + '" class="modal-med-link btn-outline">Ver folheto</a>' +
+    '<a href="#medicacao-folheto?id=' + m.id + '" class="modal-med-link btn-outline">Ver a minha ficha</a>' +
     '<a href="#medicacao-interacoes" class="modal-med-link btn-outline">Ver interações</a>' +
     '<a href="#medicacao-historico" class="modal-med-link btn-ghost">Ver histórico</a>' +
     '</div></div></div></div>';
