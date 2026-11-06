@@ -5,7 +5,8 @@
   "type": "commonjs",
   "scripts": {
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:browser": "node tests/browser/sprint2.e2e.js"
   },
   "devDependencies": {
     "vitest": "^1.6.0"
