@@ -94,7 +94,8 @@ async function main() {
   if (!BASE) { srv = await serve(); BASE = 'http://127.0.0.1:' + srv.address().port + '/index.html'; }
   const browser = await chromium.launch();
   const errors = [];
-  const fresh = async (opts = {}) => browser.newContext(Object.assign({ viewport: { width: 390, height: 844 }, acceptDownloads: true }, opts));
+  // Todos os contextos correm explicitamente em Europe/Lisbon (a app usa o fuso do dispositivo).
+  const fresh = async (opts = {}) => browser.newContext(Object.assign({ viewport: { width: 390, height: 844 }, acceptDownloads: true, timezoneId: 'Europe/Lisbon', locale: 'pt-PT' }, opts));
 
   // ------------------------------------------------------------------
   current = 'migração';
@@ -508,13 +509,237 @@ async function main() {
     await ctx.close();
   }
 
-  current = 'estado inválido';
+  current = 'proteção dos dados v2';
+  {
+    // Prepara uma instalação v2 real com dados (migração + uma toma + stock), e guarda o estado.
+    const ctx0 = await fresh(); const q = await newPage(ctx0, errors);
+    await seed(q, v1Data()); await q.reload(); await ready(q); await migrateViaUi(q); await q.reload(); await ready(q); await waitWriter(q);
+    await q.evaluate(() => {
+      DMStore.applyV2({ operationId: 'prep1', type: 'stock_config', medicationId: 'm1', unit: 'comprimido', amountPerDose: 1, initialQuantity: 10 });
+      DMStore.applyV2({ operationId: 'prep2', type: 'record_dose', reminderId: 'r1', date: DailyMedV2.localDateStr(new Date()), time: '08:00', status: 'taken' });
+    });
+    const V2DATA = await snapshot(q); await ctx0.close();
+    const v2raw = V2DATA.dailymed_v2;
+
+    async function scenario(name, mutate, expectReason, opts = {}) {
+      const ctx = await fresh(); const p = await newPage(ctx, errors);
+      const data = Object.assign({}, V2DATA); mutate(data);
+      await seed(p, data); await p.reload(); await ready(p); await waitWriter(p).catch(() => {}); await p.waitForTimeout(300);
+      const s = await status(p);
+      chk(name + ': fica em recuperação (' + expectReason + ')', s.loaded === 'damaged' && s.notices.damaged === expectReason && s.block === 'damaged', s);
+      chk(name + ': aviso claro no topo', (await p.textContent('#dm-banners')).includes('só de leitura') && await p.locator('#link-recovery').count() === 1);
+      const tries = await p.evaluate(() => [
+        DMStore.applyV2({ operationId: 'x_' + Math.random(), type: 'stock_confirm', medicationId: 'm1' }).status,
+        setSettings({ theme: 'dark' }),
+        DMStore.writeRaw('dailymed_recycling_deliveries', '[]'),
+      ]);
+      chk(name + ': nenhuma gravação aceite', tries[0] === 'read_only_tab' && tries[1] === false && tries[2] === false, tries);
+      const mig = await p.evaluate(() => DMStore.migrate().then(() => 'ok', (e) => e.step));
+      chk(name + ': migração recusada', mig !== 'ok', mig);
+      await go(p, '#home');
+      chk(name + ': sem cartão "Nova versão dos dados"', await p.locator('#card-migrate').count() === 0);
+      await go(p, '#definicoes');
+      chk(name + ': sem ligação "Atualizar"', await p.locator('#link-migrate').count() === 0 && await p.locator('#link-recovery-settings').count() === 1);
+      await go(p, '#atualizar-dados');
+      chk(name + ': ecrã de recuperação (sem botão de migrar)', await p.locator('#recovery').count() === 1 && await p.locator('#btn-migrate').count() === 0);
+      const after = await snapshot(p);
+      chk(name + ': dailymed_v2 intacto (byte a byte)', after.dailymed_v2 === data.dailymed_v2);
+      const allSame = Object.keys(data).every((k) => after[k] === data[k]);
+      chk(name + ': nenhuma chave alterada ou apagada', allSame && Object.keys(after).filter((k) => !(k in data)).every((k) => k === 'dailymed_v2_diagnostics'), Object.keys(after).filter((k) => after[k] !== data[k]));
+      if (opts.after) await opts.after(p, ctx, data);
+      await ctx.close();
+    }
+
+    await scenario('v2 sem marcador', (d) => { delete d.dailymed_schema; }, 'schema_missing_with_v2', {
+      after: async (p) => {
+        chk('v2 sem marcador: dados v2 mostrados (só leitura)', (await status(p)).mode === 'v2' && (await p.textContent('#recovery-v2')).includes('2 medicamentos'));
+        await Promise.all([p.waitForEvent('load'), p.click('#btn-repair-v2')]); await ready(p); await waitWriter(p);
+        const s = await status(p);
+        const sc = JSON.parse(await p.evaluate(() => localStorage.getItem('dailymed_schema')));
+        chk('reparar (pedido pelo utente): volta a v2 com os mesmos dados', s.mode === 'v2' && s.loaded === 'v2' && s.block === null && (await p.evaluate(() => localStorage.getItem('dailymed_v2'))) === v2raw, s);
+        chk('reparação regista o marcador anterior', sc.status === 'v2' && sc.repairedFrom === 'schema_missing_with_v2' && sc.previousMarker === null);
+        chk('depois da reparação o stock e as tomas continuam', (await p.evaluate(() => DailyMedV2.stockBalance(DMStore.getV2(), 'm1'))) === 9);
+      },
+    });
+    await scenario('marcador corrompido (JSON inválido)', (d) => { d.dailymed_schema = '{"status":"v2",'; }, 'schema_corrupt_with_v2', {
+      after: async (p) => {
+        await Promise.all([p.waitForEvent('load'), p.click('#btn-repair-v2')]); await ready(p);
+        const sc = JSON.parse(await p.evaluate(() => localStorage.getItem('dailymed_schema')));
+        chk('marcador corrompido: reparação guarda o texto antigo', sc.previousMarker === '{"status":"v2",' && sc.status === 'v2');
+      },
+    });
+    await scenario('marcador com estado desconhecido', (d) => { d.dailymed_schema = JSON.stringify({ status: 'v9' }); }, 'schema_corrupt_with_v2');
+    await scenario('marcador "v1" com dados v2', (d) => { d.dailymed_schema = JSON.stringify({ status: 'v1' }); }, 'v1_with_v2_data');
+    await scenario('marcador v2 com dados v2 corrompidos', (d) => { d.dailymed_v2 = d.dailymed_v2.slice(0, 200); }, 'v2_corrupt', {
+      after: async (p) => {
+        chk('dados v2 corrompidos: não se mostram nem se reativam', (await status(p)).mode === 'v1' && await p.locator('#btn-repair-v2').count() === 0 && await p.locator('#btn-repair-v1').count() === 0);
+        const r = await p.evaluate(() => DMStore.repairMarker('reactivate_v2').then(() => 'ok', (e) => e.step));
+        const r2 = await p.evaluate(() => DMStore.repairMarker('mark_v1').then(() => 'ok', (e) => e.step));
+        chk('dados v2 corrompidos: reparação recusada (nas duas opções)', r === 'v2_invalid' && r2 === 'v2_exists', { r, r2 });
+      },
+    });
+    await scenario('migração interrompida com dados v2 que não são dela', (d) => { d.dailymed_schema = JSON.stringify({ status: 'migrating', migrationId: 'mig_outra' }); }, 'migrating_with_foreign_v2');
+
+    // marcador v2 sem dados v2 (nada a proteger): recuperação permite voltar a v1
+    {
+      const ctx = await fresh(); const p = await newPage(ctx, errors);
+      await seed(p, v1Data({ dailymed_schema: JSON.stringify({ status: 'v2' }) })); await p.reload(); await ready(p); await waitWriter(p);
+      const s = await status(p);
+      chk('marcador v2 sem dados: recuperação, não v2', s.mode === 'v1' && s.loaded === 'damaged' && s.notices.damaged === 'v2_without_data', s);
+      await go(p, '#atualizar-dados');
+      chk('marcador v2 sem dados: só oferece "continuar com a versão 1"', await p.locator('#btn-repair-v1').count() === 1 && await p.locator('#btn-repair-v2').count() === 0);
+      const before = await snapshot(p);
+      await Promise.all([p.waitForEvent('load'), p.click('#btn-repair-v1')]); await ready(p); await waitWriter(p);
+      const after = await snapshot(p);
+      chk('voltar a v1: grava só o marcador', (await status(p)).loaded === 'v1' && Object.keys(before).every((k) => k === 'dailymed_schema' || k === 'dailymed_v2_diagnostics' || after[k] === before[k]));
+      const t = await migrateViaUi(p);
+      chk('depois disso a migração normal funciona', /Atualização concluída/.test(t), t);
+      await ctx.close();
+    }
+
+    // dados v2 aparecem a meio de uma migração (outro separador antigo / restauro): nada é substituído
+    {
+      const ctx = await fresh(); const p = await newPage(ctx, errors);
+      await seed(p, v1Data()); await p.reload(); await ready(p); await waitWriter(p);
+      const r = await p.evaluate((raw) => {
+        const orig = Storage.prototype.setItem;
+        Storage.prototype.setItem = function (k, v) { if (k === 'dailymed_v2_images') { Storage.prototype.setItem = orig; orig.call(localStorage, 'dailymed_v2', raw); } orig.call(this, k, v); };
+        return DMStore.migrate().then(() => 'ok', (e) => e.step);
+      }, v2raw);
+      const after = await snapshot(p);
+      chk('dados v2 que aparecem durante a migração não são substituídos', r === 'v2_exists' && after.dailymed_v2 === v2raw, r);
+      await ctx.close();
+    }
+  }
+
+  current = 'stock: unidade e quantidade por toma (interface)';
   {
     const ctx = await fresh(); const p = await newPage(ctx, errors);
-    await seed(p, v1Data({ dailymed_schema: JSON.stringify({ status: 'v2' }) })); await p.reload(); await ready(p);
-    const s = await status(p);
-    chk('marcador v2 sem dados v2: não é tratado como v2', s.mode === 'v1' && s.loaded === 'invalid' && s.block !== null, s);
-    chk('aviso de estado incoerente', (await p.textContent('#dm-banners')).includes('incoerente'));
+    await seed(p, { dailymed_onboarding_done: 'true' }); await p.reload(); await ready(p); await migrateViaUi(p); await p.reload(); await ready(p); await waitWriter(p);
+    await p.evaluate(() => {
+      DMStore.applyV2({ operationId: 'u1', type: 'medication_upsert', medication: { id: 'mu', name: 'DEMO Unidade', dosage: '1' } });
+      DMStore.applyV2({ operationId: 'u2', type: 'stock_config', medicationId: 'mu', unit: 'comprimido', amountPerDose: 1, initialQuantity: 10 });
+      DMStore.applyV2({ operationId: 'u3', type: 'stock_exit', medicationId: 'mu', quantity: 1 });
+      DMStore.applyV2({ operationId: 'u4', type: 'stock_exit', medicationId: 'mu', quantity: 1 });
+    });
+    await go(p, '#medicacao-stock?id=mu');
+    chk('saldo 8 comprimidos', (await p.textContent('#stock-balance')).trim() === '8');
+    chk('unidade não editável, com explicação', await p.locator('form[data-kind="settings"] select[name="unit"]').count() === 0 && /não pode ser alterada/.test(await p.textContent('#stock-unit-locked')));
+    const forced = await p.evaluate(() => DMStore.applyV2({ operationId: 'u5', type: 'stock_config', medicationId: 'mu', unit: 'unidade', amountPerDose: 1, confirmAmountChange: true }).reason);
+    chk('mudar a unidade por código também é recusado', forced === 'unit_locked');
+    await p.click('form.stock-form[data-kind="settings"] >> xpath=..//summary');
+    await p.fill('form.stock-form[data-kind="settings"] input[name="amountPerDose"]', '2');
+    await p.click('form.stock-form[data-kind="settings"] button[type="submit"]'); await p.waitForTimeout(300);
+    chk('quantidade por toma sem confirmação: recusada com explicação', /Confirma a nova quantidade/.test(await toast(p)) && (await v2(p)).stockConfig.mu.amountPerDose === 1);
+    await p.click('form.stock-form[data-kind="settings"] >> xpath=..//summary');
+    await p.fill('form.stock-form[data-kind="settings"] input[name="amountPerDose"]', '2');
+    await p.check('form.stock-form[data-kind="settings"] input[name="confirmAmountChange"]');
+    await p.click('form.stock-form[data-kind="settings"] button[type="submit"]'); await p.waitForTimeout(300);
+    const st = await v2(p);
+    chk('quantidade por toma confirmada: muda e fica registada; saldo e movimentos intactos',
+      st.stockConfig.mu.amountPerDose === 2 && st.stockConfig.mu.changes.length === 1 && st.stockConfig.mu.unit === 'comprimido' &&
+      (await p.textContent('#stock-balance')).trim() === '8' && st.stockMovements.filter((m) => m.medicationId === 'mu').length === 3);
+    chk('tomas restantes recalculadas (8 / 2 = 4)', (await p.textContent('#stock-doses')).trim() === '4');
+    chk('alteração visível no ecrã', (await p.locator('#stock-config-changes li').count()) === 1);
+    await ctx.close();
+  }
+
+  current = 'datas e mudança de hora (browser)';
+  {
+    const ctx = await fresh(); const p = await newPage(ctx, errors);
+    await seed(p, { dailymed_onboarding_done: 'true' }); await p.reload(); await ready(p); await migrateViaUi(p); await p.reload(); await ready(p); await waitWriter(p);
+    const r = await p.evaluate(() => {
+      DMStore.applyV2({ operationId: 'd1', type: 'medication_upsert', medication: { id: 'md', name: 'DEMO Datas' } });
+      DMStore.applyV2({ operationId: 'd2', type: 'reminder_upsert', reminder: { id: 'rd', medicationId: 'md', times: ['08:00'], isActive: true } });
+      const out = {};
+      for (const d of ['2026-02-31', '2026-13-01', '2026-04-31', '2027-02-29']) out[d] = DMStore.applyV2({ operationId: 'dx_' + d, type: 'record_dose', reminderId: 'rd', date: d, time: '08:00', status: 'taken' }).reason;
+      out.records = DMStore.getV2().doseRecords.length;
+      out.tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      out.gap = DailyMedV2.classifySlot('2026-03-29', '01:30').kind;
+      const rep = DailyMedV2.classifySlot('2026-10-25', '01:30');
+      out.rep = [rep.kind, new Date(rep.instant).toISOString(), new Date(rep.second).toISOString()];
+      out.leap = DailyMedV2.isValidDateStr('2028-02-29');
+      return out;
+    });
+    chk('browser em Europe/Lisbon', r.tz === 'Europe/Lisbon', r.tz);
+    chk('datas impossíveis recusadas no browser, nada gravado', ['2026-02-31', '2026-13-01', '2026-04-31', '2027-02-29'].every((d) => r[d] === 'invalid_date') && r.records === 0, r);
+    chk('2028-02-29 é uma data válida', r.leap === true);
+    chk('29/03/2026 01:30 inexistente', r.gap === 'inexistente');
+    chk('25/10/2026 01:30 repetida: primeira 00:30Z, segunda 01:30Z', r.rep[0] === 'repetido' && r.rep[1] === '2026-10-25T00:30:00.000Z' && r.rep[2] === '2026-10-25T01:30:00.000Z', r.rep);
+    await ctx.close();
+    // Comportamento documentado: a app segue o fuso do dispositivo. Noutro fuso, as mudanças de hora são as desse fuso.
+    const ctxNY = await fresh({ timezoneId: 'America/New_York' }); const n = await newPage(ctxNY, errors);
+    await n.goto(BASE + '#home'); await ready(n);
+    const ny = await n.evaluate(() => [DailyMedV2.classifySlot('2026-03-29', '01:30').kind, DailyMedV2.classifySlot('2026-03-08', '02:30').kind]);
+    chk('fuso do dispositivo (Nova Iorque): 29/03 normal, 08/03 02:30 inexistente', ny[0] === 'normal' && ny[1] === 'inexistente', ny);
+    await ctxNY.close();
+  }
+
+  current = 'alterações externas por chave';
+  {
+    const ctx = await fresh(); const a = await newPage(ctx, errors);
+    await seed(a, v1Data()); await a.reload(); await ready(a); await migrateViaUi(a); await a.reload(); await ready(a); await waitWriter(a);
+    const old = await newPage(ctx, errors); await old.goto(BASE + '#home'); await ready(old); // separador "antigo": escreve diretamente
+    const banner = async () => (await a.textContent('#dm-banners'));
+    const clear = async () => { await a.evaluate(() => { DMStore.dismissNotice('external'); DMStore.dismissNotice('sharedExternal'); }); };
+    // C: sem impacto → sem avisos
+    for (const [k, v] of [['dailymed_medication_alerts', '{"dismissed":["x"]}'], ['dailymed_last_dica', 'dica_3'], ['dailymed_geo_Rua%20Teste', '{"lat":1,"lon":2}'], ['dailymed_onboarding_done', 'true']]) {
+      await old.evaluate(([k1, v1]) => localStorage.setItem(k1, v1), [k, v]); await a.waitForTimeout(400);
+      chk('chave sem impacto (' + k + '): sem aviso', !(await banner()).includes('versão antiga'));
+    }
+    // B: partilhadas → aviso de conflito, a alteração fica
+    for (const k of ['dailymed_settings', 'dailymed_recycling_deliveries', 'dailymed_travel_checklist']) {
+      await clear();
+      await old.evaluate((k1) => localStorage.setItem(k1, k1 === 'dailymed_settings' ? '{"notifications":true,"theme":"light"}' : (k1 === 'dailymed_travel_checklist' ? '{"t1":true}' : '[{"id":"rc9"}]')), k); await a.waitForTimeout(400);
+      const b = await banner();
+      chk('chave partilhada (' + k + '): aviso de alteração por versão antiga', b.includes('versão antiga') && b.includes('partilhados'), b);
+    }
+    // gravações da própria v2 noutra aba não dão aviso falso
+    await clear();
+    await a.evaluate(() => { setSettings({ theme: 'light', notifications: false }); addRecyclingDelivery({ id: 'rc10', volume: 'pequeno', date: '2026-11-01' }); setTravelChecklistItem('t2', true); });
+    await old.waitForTimeout(400);
+    chk('gravações da v2 não geram aviso no outro separador v2', !(await old.textContent('#dm-banners')).includes('versão antiga'));
+    // A: medicação → aviso, não aplicada
+    for (const [k, v, label] of [['dailymed_reminders', '[{"id":"r1","medicationId":"m1","times":["10:00"],"isActive":true}]', 'lembretes'],
+      ['dailymed_medication_history', JSON.stringify([{ medicationName: 'Medicamento DEMO A', dateTime: '05/11/2026, 09:00:00' }].concat(JSON.parse(v1Data().dailymed_medication_history))), 'histórico de tomas'],
+      ['dailymed_medications', '[{"id":"m1","name":"Alterado"}]', 'medicamentos']]) {
+      await clear();
+      await old.evaluate(([k1, v1]) => localStorage.setItem(k1, v1), [k, v]); await a.waitForTimeout(600);
+      const b = await banner();
+      chk('chave de medicação (' + k + '): aviso com "' + label + '"', b.includes('versão antiga') && b.includes(label), b);
+    }
+    const st = await v2(a);
+    chk('alterações antigas de medicação não aplicadas', st.reminders.find((r) => r.id === 'r1').times.length === 3 && st.medications.find((m) => m.id === 'm1').name === 'Medicamento DEMO A');
+    chk('nova entrada do histórico antigo guardada como "não confirmado"', st.doseRecords.filter((r) => r.status === 'legacy_unverified').length === 3);
+    // deteção no arranque (sem separador v2 aberto na altura da alteração)
+    await a.close(); await old.close();
+    const lone = await newPage(ctx, errors); await lone.goto(BASE + '#home'); await ready(lone);
+    await lone.evaluate(() => localStorage.setItem('dailymed_settings', '{"notifications":true,"theme":"dark"}')); // ninguém a ouvir esta alteração em v2? (este separador é v2 e é o próprio a escrever: não recebe evento)
+    await lone.reload(); await ready(lone); await waitWriter(lone); await lone.waitForTimeout(400);
+    chk('alteração partilhada feita sem separador v2 a ouvir: detetada no arranque', (await lone.textContent('#dm-banners')).includes('definições'));
+    await ctx.close();
+  }
+
+  current = 'exportação';
+  {
+    const ctx = await fresh(); const p = await newPage(ctx, errors);
+    await seed(p, v1Data()); await p.reload(); await ready(p); await migrateViaUi(p); await p.reload(); await ready(p); await waitWriter(p);
+    const before = await snapshot(p);
+    const dl = p.waitForEvent('download', { timeout: 5000 });
+    await go(p, '#definicoes'); await p.click('#data-section [data-action="export"]');
+    const d = await dl;
+    const file = JSON.parse(fs.readFileSync(await d.path(), 'utf8'));
+    const after = await snapshot(p);
+    chk('exportação não altera o localStorage', JSON.stringify(before) === JSON.stringify(after));
+    chk('exportação é JSON com formato e chaves esperadas', file.format === 'dailymed-export' && file.schemaStatus === 'v2' && file.keys.dailymed_v2 === before.dailymed_v2 && file.keys.dailymed_medications === before.dailymed_medications);
+    // recalcula o SHA-256 fora do browser (Node crypto), com a mesma serialização canónica
+    const canon = (o) => (o === null || typeof o !== 'object') ? JSON.stringify(o) : Array.isArray(o) ? '[' + o.map(canon).join(',') + ']' : '{' + Object.keys(o).sort().map((k) => JSON.stringify(k) + ':' + canon(o[k])).join(',') + '}';
+    const copy = Object.assign({}, file); delete copy.checksum;
+    const h = require('crypto').createHash('sha256').update(canon(copy), 'utf8').digest('hex');
+    chk('SHA-256 confirmado independentemente', h === file.checksum, { h, c: file.checksum });
+    const tampered = JSON.parse(JSON.stringify(copy)); tampered.keys.dailymed_v2 = tampered.keys.dailymed_v2.replace('Medicamento DEMO A', 'Medicamento DEMO X');
+    chk('ficheiro alterado deixa de bater com o SHA-256', require('crypto').createHash('sha256').update(canon(tampered), 'utf8').digest('hex') !== file.checksum);
+    chk('nome do ficheiro inclui o início do checksum', d.suggestedFilename().includes(file.checksum.slice(0, 8)));
     await ctx.close();
   }
 
