@@ -987,3 +987,51 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .modal-med-header {
   background: linear-gradient(135deg, rgba(148,130,189,0.95), rgba(130,183,213,0.9));
 }
+
+/* ===== DailyMed v2: avisos, tomas, stock e histórico ===== */
+.dm-banners { display: flex; flex-direction: column; gap: 8px; padding: 8px 16px 0; }
+.dm-banner { border-radius: 14px; padding: 12px 14px; font-size: 14px; line-height: 1.4; border: 1px solid; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.dm-banner p { margin: 0; flex: 1 1 220px; }
+.dm-banner--info { background: #eef6ff; border-color: #bfdbfe; color: #1e3a8a; }
+.dm-banner--warning { background: #fff7dd; border-color: #fcd34d; color: #78350f; }
+.dm-banner--danger { background: #fef2f2; border-color: #fecaca; color: #7f1d1d; }
+.dm-banner--ok { background: #ecfdf3; border-color: #bbf7d0; color: #14532d; }
+.dm-banner-btn { min-height: 40px; padding: 8px 14px; border-radius: 999px; background: #111827; color: #fff; font-weight: 600; font-size: 14px; }
+.progress-bar { height: 8px; border-radius: 999px; background: rgba(0,0,0,.08); overflow: hidden; margin-top: 8px; }
+.progress-bar span { display: block; height: 100%; background: #16a34a; border-radius: 999px; transition: width .3s; }
+.slot-list { display: flex; flex-direction: column; gap: 10px; }
+.slot-row { display: flex; gap: 12px; padding: 12px; border-radius: 16px; border: 1px solid #e5e7eb; background: #fff; }
+.slot-row--amber { border-color: #fcd34d; background: #fffbeb; }
+.slot-row--ok { border-color: #bbf7d0; background: #f0fdf4; }
+.slot-row--muted { background: #f9fafb; }
+.slot-time { font-weight: 700; font-size: 18px; min-width: 56px; font-variant-numeric: tabular-nums; }
+.slot-main { flex: 1; min-width: 0; }
+.slot-name { font-weight: 600; }
+.slot-sub, .slot-status { font-size: 13px; color: #4b5563; }
+.slot-note { font-size: 13px; margin-top: 4px; color: #374151; }
+.slot-note--warn { color: #92400e; font-weight: 600; }
+.slot-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.slot-btn { min-height: 44px; padding: 8px 14px; border-radius: 999px; border: 1px solid #d1d5db; background: #fff; font-weight: 600; font-size: 14px; }
+.slot-btn--primary { background: #16a34a; border-color: #16a34a; color: #fff; }
+.slot-btn--ghost { border-color: transparent; color: #374151; text-decoration: underline; }
+.slot-btn:disabled { opacity: .5; }
+.slot-reason { min-height: 44px; border-radius: 999px; border: 1px solid #d1d5db; padding: 0 10px; font-size: 13px; max-width: 100%; }
+.stock-balance { font-size: 28px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.stock-flag { margin-top: 8px; padding: 8px 10px; border-radius: 12px; font-size: 14px; }
+.stock-flag--warn { background: #fff7dd; color: #78350f; border: 1px solid #fcd34d; }
+.stock-flag--low { background: #fef2f2; color: #7f1d1d; border: 1px solid #fecaca; }
+.stock-op { border: 1px solid #e5e7eb; border-radius: 14px; padding: 10px 12px; background: #fff; }
+.stock-op summary { cursor: pointer; font-weight: 600; min-height: 32px; }
+.mov-list { display: flex; flex-direction: column; gap: 8px; }
+.mov-row { display: flex; justify-content: space-between; gap: 8px; padding: 10px 12px; border-radius: 12px; border: 1px solid #e5e7eb; }
+.mov-title { font-weight: 600; }
+.mov-delta { font-variant-numeric: tabular-nums; }
+.mov-sub { font-size: 12px; color: #6b7280; }
+.mov-right { text-align: right; }
+.mov-balance { font-weight: 700; font-variant-numeric: tabular-nums; }
+.history-row { padding: 10px 12px; border-radius: 12px; border: 1px solid #e5e7eb; }
+.migration-log { list-style: decimal; padding-left: 20px; font-size: 14px; }
+.dark .slot-row, .dark .mov-row, .dark .history-row, .dark .stock-op { background: #111827; border-color: #374151; }
+
+/* Garante que elementos escondidos ficam escondidos mesmo sem o CDN do Tailwind (offline). */
+.hidden { display: none; }

@@ -261,14 +261,10 @@ function showToast(message, icon) {
     '<div class="toast-reminder__text">' + escapeHtml(message) + '</div>' +
     '</div>';
   document.body.insertAdjacentHTML('beforeend', html);
-  setTimeout(function () {
-    var el = document.getElementById('toast-reminder');
-    if (el) el.classList.add('toast-reminder--hide');
-  }, 3500);
-  setTimeout(function () {
-    var el = document.getElementById('toast-reminder');
-    if (el) el.remove();
-  }, 5000);
+  // Os temporizadores agem só sobre esta mensagem (antes, o temporizador de uma mensagem antiga apagava a nova).
+  var el = document.body.lastElementChild;
+  setTimeout(function () { if (el && el.isConnected) el.classList.add('toast-reminder--hide'); }, 3500);
+  setTimeout(function () { if (el && el.isConnected) el.remove(); }, 5000);
 }
 
 function playSuccessChime() {
@@ -320,9 +316,11 @@ function showSuccessFeedback(message) {
 
 const ALERTS_KEY = 'dailymed_medication_alerts';
 
+function alertsKey() { return (typeof DMStore !== 'undefined' && DMStore.mode() === 'v2') ? DMStore.KEYS.alerts : ALERTS_KEY; }
+
 function getAlertState() {
   try {
-    var raw = localStorage.getItem(ALERTS_KEY);
+    var raw = localStorage.getItem(alertsKey());
     return raw ? JSON.parse(raw) : {};
   } catch (e) {
     return {};
@@ -330,7 +328,7 @@ function getAlertState() {
 }
 
 function setAlertState(state) {
-  localStorage.setItem(ALERTS_KEY, JSON.stringify(state));
+  DMStore.writeRaw(alertsKey(), JSON.stringify(state));
 }
 
 function markAlertNotified(state, medId, type) {
@@ -375,10 +373,12 @@ function checkMedicationAlerts() {
       }
     }
 
+    var v2s = (typeof DMStore !== 'undefined' && DMStore.mode() === 'v2') ? DMStore.getV2() : null;
     var qty = parseInt(m.quantity || 0, 10) || 0;
-    if (qty <= 10) {
+    var lowNow = v2s ? DailyMedV2.isLowStock(v2s, m.id) : qty <= 10;
+    if (lowNow) {
       if (!wasAlertNotifiedToday(state, m.id, 'stock_low')) {
-        var msgStock = 'Stock baixo de ' + name + ' (' + qty + ' un.).';
+        var msgStock = v2s ? 'Stock baixo de ' + name + ': restam cerca de ' + DailyMedV2.dosesRemaining(v2s, m.id) + ' tomas.' : 'Stock baixo de ' + name + ' (' + qty + ' un.).';
         pending.push({ medId: m.id, type: 'stock_low', title: 'Alerta DailyMed', message: msgStock, icon: 'notifications' });
       }
     }
@@ -411,7 +411,31 @@ function scheduleMedicationAlertChecks() {
   medicationAlertTimer = setInterval(checkMedicationAlerts, 60 * 60 * 1000);
 }
 
+var v2NotifiedSlots = {};
+function scheduleReminderNotificationsV2() {
+  clearReminderTimers();
+  var now = Date.now();
+  V2UI.todaySlots().forEach(function (slot) {
+    if (slot.record || slot.status === 'inexistente' || !slot.instant) return;
+    var fireAt = slot.snoozedUntil ? Date.parse(slot.snoozedUntil) : slot.instant;
+    if (fireAt <= now) return;
+    reminderTimers.push(setTimeout(function () { notifySlotV2(slot); }, fireAt - now));
+  });
+  scheduleDailyReminderReschedule();
+  checkDueRemindersNow();
+}
+function notifySlotV2(slot) {
+  if (!getSettings().notifications || v2NotifiedSlots[slot.slotKey]) return;
+  v2NotifiedSlots[slot.slotKey] = true;
+  var msg = 'Hora de tomar ' + (slot.medicationName || 'o teu medicamento') + ' (' + slot.time + ').';
+  showToast(msg);
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    try { new Notification('Lembrete DailyMed', { body: msg }); } catch (e) {}
+  }
+}
+
 function scheduleReminderNotifications() {
+  if (typeof V2UI !== 'undefined' && V2UI.isV2()) return scheduleReminderNotificationsV2();
   clearReminderTimers();
   var settings = getSettings();
   var today = todayStr();
@@ -469,6 +493,13 @@ function scheduleDailyReminderReschedule() {
 function checkDueRemindersNow() {
   var settings = getSettings();
   if (!settings.notifications) return;
+  if (typeof V2UI !== 'undefined' && V2UI.isV2()) {
+    var nowMs = Date.now();
+    V2UI.todaySlots().forEach(function (slot) {
+      if (slot.status === 'por_registar' && nowMs - slot.instant <= 30 * 60 * 1000) notifySlotV2(slot); // só avisa até 30 min depois
+    });
+    return;
+  }
   var today = todayStr();
   var now = new Date();
   var reminders = getReminders().filter(function (r) { return r.isActive; });
@@ -527,7 +558,7 @@ function setNavActive(section) {
 function render(html, showNav) {
   if (showNav === undefined) showNav = true;
   const app = document.getElementById('app');
-  app.innerHTML = html;
+  app.innerHTML = (typeof V2UI !== 'undefined' ? V2UI.banners() : '') + html;
   const section = (currentView.split('/')[0] || currentView).split('-')[0];
   if (showNav) setNavActive(section);
 }
@@ -538,6 +569,7 @@ function navigate(path, params) {
 }
 
 function viewHome() {
+  if (V2UI.isV2()) return V2UI.viewHomeV2();
   const meds = getMedications();
   const activeCount = meds.filter(function (m) { return m.isActive; }).length;
   const remindersToday = getRemindersForToday().length;
@@ -558,6 +590,7 @@ function viewHome() {
     '<p class="next-step-text">' + nextLabel + '</p>' +
     (nextReminder ? '<a href="#lembretes" class="next-step-cta">Ver lembretes</a>' : '') +
     '</section>' +
+    (DMStore.status().loadedStatus === 'v1' && DMStore.effectiveStatus() === 'v1' ? '<a href="#atualizar-dados" class="summary-card" id="card-migrate"><div><p class="summary-title">Nova versão dos dados</p><p class="summary-sub">Tomas por horário e stock por movimentos. Saber mais e atualizar</p></div><span class="material-icons">upgrade</span></a>' : '') +
     '<section class="home-secondary-footer space-y-2">' +
     '<p class="section-label">Configurações</p>' +
     '<div class="grid grid-cols-1 gap-2">' +
@@ -612,10 +645,12 @@ function viewMedicacaoArmario(params) {
   if (category) list = list.filter(function (m) { return m.category === category; });
   if (search) list = list.filter(function (m) { return (m.name || '').toLowerCase().includes(search) || (m.manufacturer || '').toLowerCase().includes(search); });
   if (filter === 'ativos') list = list.filter(function (m) { return m.isActive; });
+  const v2st = V2UI.isV2() ? DMStore.getV2() : null;
+  const lowFn = function (m) { return v2st ? (DailyMedV2.isLowStock(v2st, m.id) || DailyMedV2.openIssues(v2st, m.id).length > 0) : (m.quantity || 0) <= 10; };
   if (filter === 'stock') list = list.filter(function (m) { return (parseInt(m.quantity || 0, 10) || 0) > 0; });
   if (filter === 'expirando') list = list.filter(function (m) { return getValidityStatus(m.expiryDate).type === 'soon'; });
   if (filter === 'expirados') list = list.filter(function (m) { return getValidityStatus(m.expiryDate).type === 'expired'; });
-  if (filter === 'baixo') list = list.filter(function (m) { return (m.quantity || 0) <= 10; });
+  if (filter === 'baixo') list = list.filter(lowFn);
   const detected = detectInteractions(list);
   const catQs = category ? '?cat=' + encodeURIComponent(category) : '';
   const filterBase = '#medicacao-armario' + catQs;
@@ -630,7 +665,7 @@ function viewMedicacaoArmario(params) {
     const cardBg = m.isActive ? 'app-card app-card--soft text-gray-800' : 'app-card text-gray-800';
     const dotHtml = m.isActive ? '<span class="absolute top-3 right-3 w-2.5 h-2.5 rounded-full bg-primary" aria-hidden="true" title="Ativo"></span>' : '';
     const validity = getValidityStatus(m.expiryDate);
-    const isLow = (parseInt(m.quantity || 0, 10) || 0) <= 10;
+    const isLow = lowFn(m);
   const badges = [
       validity.type === 'expired' ? '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[12px] font-semibold bg-red-100 text-red-700">Expirado</span>' : '',
       validity.type === 'soon' ? '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[12px] font-semibold bg-yellow-100 text-yellow-700">Expira em breve</span>' : '',
@@ -709,7 +744,12 @@ function viewMedicacaoAdicionar(params) {
     '<section class="med-form-section">' +
     '<h3 class="med-form-section-title"><span class="material-icons text-lg">inventory_2</span>Stock e validade</h3>' +
     '<div class="space-y-3">' +
-    '<div><label class="med-form-label">Número de Unidades *</label><input type="number" name="quantity" required min="0" class="w-full px-4 py-2.5 input-outline" value="30" /></div>' +
+    (V2UI.isV2()
+      ? '<p class="text-sm">Stock (opcional): preenche os três campos para a DailyMed descontar as tomas. Podes configurar mais tarde.</p>' +
+        '<div><label class="med-form-label">Unidade</label><select name="stockUnit" class="w-full px-4 py-2.5 input-outline"><option value="">Sem stock por agora</option>' + DailyMedV2.UNITS.map(function (u) { return '<option value="' + u + '">' + u + '</option>'; }).join('') + '</select></div>' +
+        '<div><label class="med-form-label">Quantidade por toma</label><input type="number" name="amountPerDose" step="0.01" min="0.01" class="w-full px-4 py-2.5 input-outline" /></div>' +
+        '<div><label class="med-form-label">Quantidade que tens agora</label><input type="number" name="quantity" step="0.01" min="0" class="w-full px-4 py-2.5 input-outline" /></div>'
+      : '<div><label class="med-form-label">Número de Unidades *</label><input type="number" name="quantity" required min="0" class="w-full px-4 py-2.5 input-outline" value="30" /></div>') +
     '<div><label class="med-form-label">Data de Validade *</label><input type="date" name="expiryDate" required class="w-full px-4 py-2.5 input-outline" /></div>' +
     '<div><label class="med-form-label">Categoria *</label><select name="category" required class="w-full px-4 py-2.5 input-outline"><option value="">Selecionar...</option>' + CATEGORIAS.map(function (c) { return '<option value="' + c + '">' + c + '</option>'; }).join('') + '</select></div>' +
     '<div><label class="med-form-label">Estado</label><select name="isActive" class="w-full px-4 py-2.5 input-outline"><option value="true">Ativo</option><option value="false">Não Ativo</option></select></div>' +
@@ -718,7 +758,7 @@ function viewMedicacaoAdicionar(params) {
     '<h3 class="med-form-section-title"><span class="material-icons text-lg">note</span>Outros</h3>' +
     '<div class="space-y-3">' +
     '<div><label class="med-form-label">Notas</label><textarea name="notes" rows="2" class="w-full px-4 py-2.5 input-outline resize-none"></textarea></div>' +
-    '<div><label class="med-form-label">Foto (opcional)</label><input type="file" name="image" accept="image/*" class="w-full px-4 py-2.5 input-outline text-sm" /></div>' +
+    '<div><label class="med-form-label">Foto (opcional)</label><input type="file" name="image" accept="image/jpeg,image/png,image/gif,image/webp" class="w-full px-4 py-2.5 input-outline text-sm" /><p class="text-xs text-on-surface-variant mt-1">JPEG, PNG, GIF ou WebP. A fotografia é verificada e reduzida antes de ser guardada.</p></div>' +
     '</div></section>' +
     '<button type="submit" class="med-form-submit"><span class="material-icons">save</span>Guardar medicamento</button></form></main>';
 }
@@ -741,15 +781,17 @@ function viewMedicacaoDetalhes(params) {
     : validity.type === 'soon'
       ? '<span class="pill pill--warning">Expira em breve</span>'
       : '<span class="pill pill--ok">Válido</span>';
-  const stockStatus = getStockStatus(parseInt(m.quantity || 0, 10) || 0);
-  const stockBadge = stockStatus.type === 'low'
+  const v2d = V2UI.isV2() ? DMStore.getV2() : null;
+  const stockStatus = v2d ? { type: !m.stockConfigured ? 'none' : (DailyMedV2.isLowStock(v2d, m.id) || DailyMedV2.openIssues(v2d, m.id).length ? 'low' : 'ok') } : getStockStatus(parseInt(m.quantity || 0, 10) || 0);
+  const stockBadge = stockStatus.type === 'none' ? '<span class="pill">Stock não configurado</span>' : stockStatus.type === 'low'
     ? '<span class="pill pill--danger">Stock baixo</span>'
     : stockStatus.type === 'medium'
       ? '<span class="pill pill--warning">Stock médio</span>'
       : '<span class="pill pill--ok">Stock OK</span>';
-  const imgBlock = m.imageUri
-    ? '<img src="' + m.imageUri + '" alt="" class="w-full max-h-52 object-contain rounded-2xl bg-gray-100 border border-gray-200" />'
-    : '<div class="med-hero-placeholder"><span class="material-icons">medication</span></div>';
+  const safeImg = DailyMedImages.safeImageSrc(m.imageUri);
+  const imgBlock = safeImg
+    ? '<img src="' + escapeHtml(safeImg) + '" alt="" class="w-full max-h-52 object-contain rounded-2xl bg-gray-100 border border-gray-200" />'
+    : '<div class="med-hero-placeholder" data-image-placeholder="' + (m.imageUri || m.imageInvalid ? 'invalid' : 'none') + '"><span class="material-icons">medication</span></div>';
   return pageHeader(nameEsc, '#medicacao-armario') +
     '<main class="app-main space-y-4 bg-white">' +
     '<section class="med-hero">' +
@@ -767,18 +809,19 @@ function viewMedicacaoDetalhes(params) {
     '<div><dt>Fabricante</dt><dd>' + manufacturerEsc + '</dd></div>' +
     '<div><dt>Posologia</dt><dd>' + posologyEsc + '</dd></div>' +
     '<div><dt>Indicação Terapêutica</dt><dd>' + indicationEsc + '</dd></div>' +
-    '<div><dt>Quantidade</dt><dd>' + (m.quantity ?? '-') + '</dd></div>' +
+    '<div><dt>Quantidade</dt><dd>' + escapeHtml(m.quantity ?? '-') + '</dd></div>' +
     '<div><dt>Data de validade</dt><dd>' + validadeStr + '</dd></div>' +
     '<div><dt>Categoria</dt><dd>' + categoryEsc + '</dd></div>' +
     '<div><dt>Estado</dt><dd>' + (m.isActive ? 'Ativo' : 'Inativo') + '</dd></div>' +
     '</dl>' +
     '<div class="med-notes"><dt>Notas</dt><dd>' + notesEsc + '</dd></div>' +
     '</section>' +
+    (v2d ? V2UI.stockSummary(m.id) : '') +
     '<section class="med-actions">' +
-    '<a href="#medicacao-editar?id=' + m.id + '" class="btn-primary w-full">Editar</a>' +
+    '<a href="#medicacao-editar?id=' + encodeURIComponent(m.id) + '" class="btn-primary w-full">Editar</a>' +
     '<a href="#medicacao-folheto?id=' + m.id + '" class="btn-outline w-full">Ver a minha ficha</a>' +
     '<a href="#medicacao-interacoes" class="btn-ghost w-full">Ver interações</a>' +
-    '<a href="#medicacao-historico" class="btn-ghost w-full">Ver histórico</a>' +
+    '<a href="#medicacao-historico' + (v2d ? '?med=' + encodeURIComponent(m.id) : '') + '" class="btn-ghost w-full">Ver histórico</a>' +
     '</section>' +
     '</main>';
 }
@@ -806,7 +849,9 @@ function viewMedicacaoEditar(params) {
     '<section class="med-form-section">' +
     '<h3 class="med-form-section-title"><span class="material-icons text-lg">inventory_2</span>Stock e validade</h3>' +
     '<div class="space-y-3">' +
-    '<div><label class="med-form-label">Número de Unidades *</label><input type="number" name="quantity" required min="1" class="w-full px-4 py-2.5 input-outline" value="' + (m.quantity ?? 0) + '" /></div>' +
+    (V2UI.isV2()
+      ? '<p class="text-sm">O stock gere-se no ecrã "Gerir stock" do medicamento (entradas, saídas, contagens).</p>'
+      : '<div><label class="med-form-label">Número de Unidades *</label><input type="number" name="quantity" required min="1" class="w-full px-4 py-2.5 input-outline" value="' + escapeHtml(m.quantity ?? 0) + '" /></div>') +
     '<div><label class="med-form-label">Data de Validade *</label><input type="date" name="expiryDate" required class="w-full px-4 py-2.5 input-outline" value="' + (m.expiryDate || '') + '" /></div>' +
     '<div><label class="med-form-label">Categoria *</label><select name="category" required class="w-full px-4 py-2.5 input-outline">' + catOpts + '</select></div>' +
     '<div><label class="med-form-label">Estado</label><select name="isActive" class="w-full px-4 py-2.5 input-outline"><option value="true"' + (m.isActive ? ' selected' : '') + '>Ativo</option><option value="false"' + (!m.isActive ? ' selected' : '') + '>Não Ativo</option></select></div>' +
@@ -851,7 +896,8 @@ function viewMedicacaoInteracoes() {
     '<main class="app-main space-y-6 bg-white">' + notice + '<section><h2 class="font-bold text-lg mb-2">Interações detetadas no teu armário</h2>' + detHtml + '</section>' + reviewHtml + '<section><h2 class="font-bold text-lg mb-2">Combinações que a app verifica</h2>' + knownHtml + '</section></main>';
 }
 
-function viewMedicacaoHistorico() {
+function viewMedicacaoHistorico(params) {
+  if (V2UI.isV2()) return V2UI.viewHistoryV2(params || {});
   const history = getMedicationHistory();
   const listHtml = history.length === 0 ? '<p class="text-on-surface-variant">Nenhuma toma registada.</p>' : '<ul class="space-y-3">' + history.map(function (h) { return '<li class="p-3 rounded-xl border border-outline flex items-center gap-3"><span class="material-icons text-primary">event</span><div><p class="font-medium">' + escapeHtml(h.medicationName || '') + '</p><p class="text-sm text-on-surface-variant">' + escapeHtml(h.dateTime || '') + ' · ' + escapeHtml(h.dosage || '') + '</p></div></li>'; }).join('') + '</ul>';
   return pageHeader('Histórico de Medicação', '#medicacao-armario') +
@@ -923,6 +969,7 @@ function viewChecklistViagem() {
 }
 
 function viewLembretes() {
+  if (V2UI.isV2()) return V2UI.viewLembretesV2();
   const list = getReminders().filter(function (r) { return r.isActive; });
   const meds = getMedications().filter(function (m) { return m.isActive; });
   const today = todayStr();
@@ -1154,7 +1201,7 @@ function getLastReadDicaId() {
 }
 
 function setLastReadDicaId(id) {
-  try { if (id) localStorage.setItem('dailymed_last_dica', id); } catch (e) {}
+  try { if (id) DMStore.writeRaw('dailymed_last_dica', id); } catch (e) {}
 }
 
 function viewDicas() {
@@ -1225,7 +1272,7 @@ function viewDicasArtigo(params) {
 function viewDefinicoes() {
   const s = getSettings();
   return pageHeader('Definições', '#home') +
-    '<main class="app-main space-y-4 bg-white"><div class="flex items-center justify-between p-4 rounded-xl border border-gray-200"><span class="font-medium text-black">Notificações</span><input type="checkbox" id="setting-notifications" ' + (s.notifications ? 'checked' : '') + ' class="rounded" /></div><div class="flex items-center justify-between p-4 rounded-xl border border-gray-200"><span class="font-medium text-black">Tema</span><select id="setting-theme" class="px-3 py-2 rounded-lg border border-gray-200"><option value="light"' + (s.theme === 'light' ? ' selected' : '') + '>Claro</option><option value="dark"' + (s.theme === 'dark' ? ' selected' : '') + '>Escuro</option></select></div></main>';
+    '<main class="app-main space-y-4 bg-white">' + V2UI.dataSection() + '<div class="flex items-center justify-between p-4 rounded-xl border border-gray-200"><span class="font-medium text-black">Notificações</span><input type="checkbox" id="setting-notifications" ' + (s.notifications ? 'checked' : '') + ' class="rounded" /></div><div class="flex items-center justify-between p-4 rounded-xl border border-gray-200"><span class="font-medium text-black">Tema</span><select id="setting-theme" class="px-3 py-2 rounded-lg border border-gray-200"><option value="light"' + (s.theme === 'light' ? ' selected' : '') + '>Claro</option><option value="dark"' + (s.theme === 'dark' ? ' selected' : '') + '>Escuro</option></select></div></main>';
 }
 
 const ROUTES = {
@@ -1253,6 +1300,8 @@ const ROUTES = {
   dicas: viewDicas,
   'dicas-artigo': viewDicasArtigo,
   definicoes: viewDefinicoes,
+  'medicacao-stock': function (params) { return V2UI.isV2() ? V2UI.viewStock(params) : viewMedicacaoDetalhes(params); },
+  'atualizar-dados': function () { return V2UI.viewMigration(); },
 };
 
 function pageHeader(title, backHref) {
@@ -1360,14 +1409,13 @@ function afterRender(path, params) {
       e.preventDefault();
       var fd = new FormData(formAdd);
       var imageInput = formAdd.querySelector('input[name="image"]');
-      var imageUri = null;
       if (imageInput && imageInput.files && imageInput.files[0]) {
-        var fr = new FileReader();
-        fr.onload = function () {
-          imageUri = fr.result;
-          saveMedAndShow(formAdd, imageUri);
-        };
-        fr.readAsDataURL(imageInput.files[0]);
+        // A fotografia é validada pelos bytes reais e volta a ser codificada antes de ser guardada.
+        DailyMedImages.prepareImageFile(imageInput.files[0]).then(function (safeUri) {
+          saveMedAndShow(formAdd, safeUri);
+        }).catch(function (err) {
+          showToast(err.message || 'Fotografia inválida.', 'error');
+        });
       } else {
         saveMedAndShow(formAdd, null);
       }
@@ -1395,7 +1443,15 @@ function afterRender(path, params) {
       dailyDosage: '',
       imageUri: imageUri || null,
     };
-    saveMedication(med);
+    if (V2UI.isV2()) {
+      med.quantity = null;
+      var resAdd = saveMedication(med);
+      if (!V2UI.report(resAdd, null)) return;
+      var unit = fd.get('stockUnit'), per = fd.get('amountPerDose'), qtyNow = fd.get('quantity');
+      if (unit && per && qtyNow !== '' && qtyNow !== null) {
+        V2UI.report(DMStore.applyV2({ operationId: DMStore.newOperationId(), type: 'stock_config', medicationId: med.id, unit: unit, amountPerDose: Number(per), initialQuantity: Number(qtyNow) }), null);
+      }
+    } else if (!saveMedication(med)) { return; }
     showToast('Medicamento guardado', 'check_circle');
     checkMedicationAlerts();
     var detected = detectInteractions();
@@ -1425,7 +1481,8 @@ function afterRender(path, params) {
       m.posology = fd.get('posology') || '';
       m.indication = fd.get('indication') || '';
       m.notes = fd.get('notes') || '';
-      saveMedication(m);
+      var resEdit = saveMedication(m);
+      if (V2UI.isV2() ? !V2UI.report(resEdit, null) : !resEdit) return;
       showToast('Medicamento guardado', 'check_circle');
       checkMedicationAlerts();
       navigate('medicacao-detalhes', { id: id });
@@ -1637,7 +1694,8 @@ function afterRender(path, params) {
         lastNotifiedDate: null,
         lastNotifiedTimes: [],
       };
-      saveReminder(rem);
+      var resRemNew = saveReminder(rem);
+      if (V2UI.isV2() ? !V2UI.report(resRemNew, null) : !resRemNew) return;
       showToast('Lembrete criado', 'check_circle');
       scheduleReminderNotifications();
       navigate('lembretes');
@@ -1672,7 +1730,8 @@ function afterRender(path, params) {
       r.period = null;
       r.time = timesEdit[0];
       r.times = timesEdit;
-      saveReminder(r);
+      var resRemEdit = saveReminder(r);
+      if (V2UI.isV2() ? !V2UI.report(resRemEdit, null) : !resRemEdit) return;
       showToast('Lembrete guardado', 'check_circle');
       scheduleReminderNotifications();
       navigate('lembretes');
@@ -1941,7 +2000,7 @@ function initRecyclingMap() {
   function setCachedCoords(address, coords) {
     try {
       var key = 'dailymed_geo_' + encodeURIComponent(address);
-      localStorage.setItem(key, JSON.stringify(coords));
+      DMStore.writeRaw(key, JSON.stringify(coords));
     } catch (e) {}
   }
 
@@ -2115,7 +2174,8 @@ function showMedicationDetailModal(m) {
   var posologyEsc = escapeHtml(m.posology || '-');
   var indicationEsc = escapeHtml(m.indication || '-');
   var notesEsc = escapeHtml(cleanNotesFromLegacy(m.notes) || '-');
-  var imgBlock = m.imageUri ? '<img src="' + escapeHtml(m.imageUri) + '" alt="" class="w-full max-h-40 object-contain rounded-xl bg-gray-100" />' : '';
+  var safeModalImg = DailyMedImages.safeImageSrc(m.imageUri);
+  var imgBlock = safeModalImg ? '<img src="' + escapeHtml(safeModalImg) + '" alt="" class="w-full max-h-40 object-contain rounded-xl bg-gray-100" />' : '';
   var body = '<div id="modal-med-detail" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">' +
     '<div class="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-hidden shadow-xl border border-gray-100">' +
     '<div class="modal-med-header text-on-primary px-4 py-3 flex items-center justify-between">' +
@@ -2232,16 +2292,18 @@ function maybeShowOnboarding() {
     if (el) el.remove();
   }
   function finish() {
-    try { localStorage.setItem('dailymed_onboarding_done', 'true'); } catch (e) {}
+    try { DMStore.writeRaw('dailymed_onboarding_done', 'true'); } catch (e) {}
     closeOverlay();
   }
   renderStep();
 }
 
 function init() {
+  DMStore.init();
+  DMStore.onChange(function (kind, detail) { V2UI.onStoreEvent(kind, detail); });
   loadInfomed().catch(function () {});
   seedMedicationsIfEmpty();
-  var meds = getMedications();
+  var meds = V2UI.isV2() ? [] : getMedications(); // em v2 não se reescrevem medicamentos no arranque
   var changed = false;
   meds.forEach(function (m) {
     if (m.notes && typeof m.notes === 'string') {
@@ -2249,17 +2311,26 @@ function init() {
       if (cleaned !== m.notes) { m.notes = cleaned; changed = true; }
     }
   });
-  if (changed) setMedications(meds);
+  if (changed && DMStore.canWrite()) setMedications(meds);
   var s = getSettings();
   document.getElementById('body-theme').classList.toggle('dark', s.theme === 'dark');
   if (s.notifications && typeof Notification !== 'undefined' && Notification.permission === 'default') Notification.requestPermission();
   maybeShowOnboarding();
   window.addEventListener('hashchange', runRoute);
   document.body.addEventListener('click', function (e) {
+    var act = e.target.closest('[data-action]');
+    if (act && !act.disabled) { e.preventDefault(); V2UI.handleAction(act, e); return; }
     if (e.target.closest('#btn-adicionar-medicamento') || e.target.closest('#btn-adicionar-medicamento-fab')) {
       e.preventDefault();
       showAddMedicationModal();
     }
+  });
+  document.body.addEventListener('submit', function (e) {
+    var f = e.target;
+    if (f && f.classList && (f.classList.contains('stock-form'))) { e.preventDefault(); V2UI.handleSubmit(f); }
+  });
+  document.body.addEventListener('change', function (e) {
+    if (e.target && e.target.id === 'history-filter') navigate('medicacao-historico', e.target.value ? { med: e.target.value } : {});
   });
   scheduleReminderNotifications();
   startReminderSweep();
