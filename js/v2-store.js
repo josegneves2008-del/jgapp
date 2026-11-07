@@ -169,7 +169,7 @@
   function sharedFp(value) { return value == null ? 'absent' : V2.fnv1a32(value); }
   function readSharedFps() { try { return JSON.parse(localStorage.getItem(SHARED_FP_KEY) || 'null'); } catch (e) { return null; } }
   function setSharedFp(key, value) {
-    var map = readSharedFps() || {};
+    var map = ensureSharedBaseline();
     map[key] = sharedFp(value);
     localStorage.setItem(SHARED_FP_KEY, JSON.stringify(map));
   }
@@ -177,11 +177,45 @@
    * Em v2: deteta gravações feitas às chaves partilhadas (B) por uma versão antiga. Não as desfaz (o formato é o mesmo),
    * mas avisa, porque há risco de gravações em conflito. Sem referência guardada → cria-a sem avisar.
    */
+  /**
+   * Referência das chaves partilhadas. Normalmente criada pela migração. Se faltar (instalação migrada por uma versão
+   * anterior desta app), é reconstruída a partir da cópia de segurança da migração — nunca a partir do conteúdo atual,
+   * que pode já incluir alterações de uma versão antiga.
+   */
+  function ensureSharedBaseline() {
+    var map = readSharedFps();
+    if (map) return map;
+    var cur = {}; SHARED_KEYS.forEach(function (k) { cur[k] = sharedFp(localStorage.getItem(k)); });
+    {
+      // Sem referência (instalação migrada por uma versão anterior desta app): usa o conteúdo da cópia de segurança
+      // da migração, para não aceitar em silêncio alterações feitas depois dela.
+      var sc = readSchema(), bk = sc.backupKey ? readBackup(sc.backupKey) : null;
+      if (bk && bk.keys) map = sharedBaselineFrom(function (k) { return bk.keys[k] === undefined ? null : bk.keys[k]; });
+      else {
+        map = cur; // sem nenhuma referência possível: a partir de agora
+        if (canWrite()) diagnostics({ at: new Date().toISOString(), type: 'shared_baseline_without_reference' });
+      }
+      if (canWrite()) { try { localStorage.setItem(SHARED_FP_KEY, JSON.stringify(map)); } catch (e) { /* nada */ } }
+    }
+    return map;
+  }
+  /*
+   * Quem decide se uma gravação numa chave partilhada veio de uma versão antiga:
+   * - Com Web Locks, só o separador de escrita grava, e um separador nunca recebe eventos das suas próprias gravações.
+   *   Logo, um evento de chave partilhada recebido pelo separador de escrita só pode vir de código antigo (sem DMStore).
+   *   É ele que compara e avisa os outros separadores pelo BroadcastChannel.
+   * - Os separadores só de leitura NÃO comparam: recebem as gravações da v2 em duas chaves (referência e valor), uma a uma,
+   *   e comparar a meio dessa sequência dava falsos avisos (condição de corrida observada nos testes).
+   * - Sem Web Locks, a v2 não grava em nenhum separador: qualquer evento de chave partilhada vem de código antigo.
+   */
+  function onSharedKeyEvent() {
+    if (mode() !== 'v2') return;
+    if (S.isWriter || !hasLocks) checkSharedKeys();
+  }
   function checkSharedKeys() {
     if (mode() !== 'v2') return [];
-    var map = readSharedFps();
+    var map = ensureSharedBaseline();
     var cur = {}; SHARED_KEYS.forEach(function (k) { cur[k] = sharedFp(localStorage.getItem(k)); });
-    if (!map) { if (canWrite()) { try { localStorage.setItem(SHARED_FP_KEY, JSON.stringify(cur)); } catch (e) { /* nada */ } } return []; }
     var changed = SHARED_KEYS.filter(function (k) { return map[k] !== undefined && map[k] !== cur[k]; });
     var missing = SHARED_KEYS.filter(function (k) { return map[k] === undefined; });
     if ((changed.length || missing.length) && canWrite()) {
@@ -193,6 +227,7 @@
     S.notices.sharedExternal = 'Uma versão antiga da DailyMed aberta noutro separador alterou: ' + labels.join(', ') +
       '. Estes dados são partilhados pelas duas versões, por isso a alteração ficou. Fecha os separadores antigos para evitar gravações em conflito.';
     if (canWrite()) diagnostics({ at: new Date().toISOString(), type: 'shared_external_change', keys: changed });
+    if (channel && S.isWriter) channel.postMessage({ type: 'shared-external', from: tabId, text: S.notices.sharedExternal, keys: changed });
     emit('external', changed);
     return changed;
   }
@@ -221,6 +256,9 @@
         setTimeout(electWriter, 100); // volta à fila
       }
       if (msg.type === 'schema-changed') checkSchemaChange();
+      if (msg.type === 'shared-external' && msg.from !== tabId && mode() === 'v2' && typeof msg.text === 'string') {
+        S.notices.sharedExternal = msg.text; emit('external', msg.keys || []);
+      }
     };
   }
 
@@ -398,10 +436,79 @@
     });
   }
 
+  /*
+   * Propriedade dos dados criados pela migração (diário persistente).
+   * As chaves derivadas (DERIVED_KEYS) só são escritas depois de o marcador "migrating" guardar, para cada uma:
+   *   pre    — identificador do conteúdo que existia antes ('absent' se não existia);
+   *   intent — identificador do conteúdo exato que a migração vai escrever.
+   * O identificador é SHA-256 do texto (ou FNV-1a + comprimento, se o browser não tiver crypto.subtle).
+   * Na reversão/recuperação, uma chave só é considerada "da migração" se o conteúdo atual for exatamente o intent.
+   * Nesse caso volta ao conteúdo anterior (apagada se não existia; reposta a partir da cópia de segurança se existia).
+   * Conteúdo que não corresponde nem ao pre nem ao intent não pertence à migração: fica intacto.
+   * O diário vive em dailymed_schema, por isso sobrevive ao fecho do separador ou do browser.
+   */
+  var DERIVED_KEYS = [KEYS.images, KEYS.shared, KEYS.v2];
+  function contentId(text) {
+    if (text === null || text === undefined) return Promise.resolve('absent');
+    return sha256Hex(text).then(function (h) { return h ? 'sha256:' + h : 'fnv:' + V2.fnv1a32(text) + ':' + text.length; });
+  }
+  function readBackup(key) { try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { return null; } }
+  function sharedBaselineFrom(getter) { var m = {}; SHARED_KEYS.forEach(function (k) { m[k] = sharedFp(getter(k)); }); return m; }
+  function pausePoint(name) {
+    var p = global.__DM_TEST_PAUSE; // testes: simula o fecho do separador neste ponto
+    return p === name || (p === true && name === 'before-activate');
+  }
+
+  /**
+   * Volta as chaves derivadas ao estado anterior à migração descrita pelo marcador. Idempotente:
+   * uma chave que já está no estado anterior não é tocada. Devolve um relatório; nunca apaga conteúdo cuja origem não prova.
+   */
+  function rollbackDerived(marker) {
+    var report = { removed: [], restored: [], preserved: [], unchanged: [], foreignV2: false };
+    var keys = (marker.journal && marker.journal.keys) || null;
+    var chain = Promise.resolve();
+    DERIVED_KEYS.forEach(function (k) {
+      chain = chain.then(function () {
+        var cur = localStorage.getItem(k);
+        var entry = keys ? keys[k] : null;
+        if (!entry) {
+          // Sem diário para esta chave (passo não alcançado, ou marcador de uma versão anterior da app).
+          if (cur === null) { report.unchanged.push(k); return; }
+          if (k === KEYS.v2) {
+            // Compatibilidade: marcador sem diário — só se aceita como da migração se o migrationId interno coincidir.
+            var v2 = null; try { v2 = JSON.parse(cur); } catch (e) { v2 = null; }
+            if (!keys && v2 && v2.migration && marker.migrationId && v2.migration.migrationId === marker.migrationId) {
+              testFail('recover-remove'); localStorage.removeItem(k); report.removed.push(k); return;
+            }
+            report.foreignV2 = true;
+          }
+          report.preserved.push(k); return;
+        }
+        return contentId(cur).then(function (curId) {
+          if (curId === entry.pre) { report.unchanged.push(k); return; }
+          if (!entry.intent || curId !== entry.intent) { report.preserved.push(k); if (k === KEYS.v2) report.foreignV2 = true; return; }
+          if (entry.pre === 'absent') { testFail('recover-remove'); localStorage.removeItem(k); report.removed.push(k); return; }
+          // Existia conteúdo antes: repõe-se a partir da cópia de segurança, só se a cópia tiver exatamente esse conteúdo.
+          var backup = readBackup(marker.backupKey);
+          var prev = backup && backup.keys ? backup.keys[k] : undefined;
+          return contentId(prev === undefined ? null : prev).then(function (prevId) {
+            if (prev === undefined || prevId !== entry.pre) { report.preserved.push(k); report.restoreFailed = (report.restoreFailed || []).concat(k); return; }
+            testFail('recover-restore');
+            localStorage.setItem(k, prev);
+            if (localStorage.getItem(k) !== prev) throw stepError('recover', 'Não foi possível repor ' + k + '.');
+            report.restored.push(k);
+          });
+        });
+      });
+    });
+    return chain.then(function () { try { localStorage.removeItem(KEYS.probe); } catch (e) { /* bloco temporário, nome reservado */ } return report; });
+  }
+
   function runMigration(onStep) {
     var migrationId = 'mig_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    var raw1, fp1, built, wroteV2 = false, wroteImages = false, backupKey = null, step = 'inicio';
+    var raw1, fp1, built, backupKey = BACKUP_PREFIX + migrationId, step = 'inicio', marker = null, texts = null;
     function at(s, text) { step = s; onStep(text); }
+    function never() { return new Promise(function () {}); }
     return Promise.resolve().then(function () {
       at('fingerprints', 'A ler os dados atuais…');
       raw1 = readV1Raw();
@@ -413,91 +520,122 @@
         { validateImage: validateImage, appVersion: APP_VERSION, migrationId: migrationId, fingerprints: fp1, now: new Date().toISOString() });
       if (!built.state) throw stepError('validate', 'Os dados atuais têm problemas e não podem ser atualizados: ' + built.report.errors.join(' '));
       if (hasV2Data() || effectiveStatus() !== 'v1') throw stepError('v2_exists', 'Já existem dados da versão 2 neste browser. A atualização foi cancelada.');
+      // Diário: estado anterior de cada chave derivada.
+      return Promise.all(DERIVED_KEYS.map(function (k) { return contentId(localStorage.getItem(k)); }));
+    }).then(function (preIds) {
+      var keys = {}; DERIVED_KEYS.forEach(function (k, i) { keys[k] = { pre: preIds[i], intent: null }; });
       at('schema-pending', 'A marcar a atualização como pendente…');
-      writeSchemaDirect({ status: 'migrating', migrationId: migrationId, startedAt: new Date().toISOString(), tabId: tabId });
+      marker = { status: 'migrating', migrationId: migrationId, startedAt: new Date().toISOString(), tabId: tabId, backupKey: backupKey, journal: { version: 1, keys: keys } };
+      writeSchemaDirect(marker);
       S.loadedStatus = 'migrating'; S.migrator = true;
       if (channel) channel.postMessage({ type: 'schema-changed' });
       at('backup', 'A criar a cópia de segurança…');
       var backup = makeBackupObject(migrationId, fp1);
       var txt = JSON.stringify(backup);
-      backupKey = BACKUP_PREFIX + migrationId;
       testFail('backup');
       try { localStorage.setItem(backupKey, txt); } catch (e) { throw stepError('backup', 'Não há espaço para a cópia de segurança. Nada foi alterado.', e); }
       if (localStorage.getItem(backupKey) !== txt) throw stepError('backup', 'A cópia de segurança não ficou gravada corretamente.');
+      // Conteúdo exato a escrever. A referência das chaves partilhadas é criada aqui, com o conteúdo que a v1 tem agora:
+      // qualquer alteração posterior por uma versão antiga é detetada depois da ativação, mesmo sem recarregar.
+      texts = {};
+      texts[KEYS.images] = JSON.stringify(built.images);
+      texts[KEYS.shared] = JSON.stringify(sharedBaselineFrom(function (k) { return localStorage.getItem(k); }));
+      texts[KEYS.v2] = JSON.stringify(built.state);
       at('space', 'A verificar o espaço disponível…');
-      var v2txt = JSON.stringify(built.state), imgTxt = JSON.stringify(built.images);
-      spaceProbe(v2txt.length + imgTxt.length);
+      spaceProbe(texts[KEYS.v2].length + texts[KEYS.images].length + texts[KEYS.shared].length);
+      return Promise.all(DERIVED_KEYS.map(function (k) { return contentId(texts[k]); }));
+    }).then(function (intentIds) {
+      DERIVED_KEYS.forEach(function (k, i) { marker.journal.keys[k].intent = intentIds[i]; });
+      writeSchemaDirect(marker); // o diário fica gravado ANTES de qualquer escrita nas chaves derivadas
+      if (pausePoint('before-images')) return never();
       at('write', 'A gravar os dados da versão 2…');
       testFail('write-images');
-      localStorage.setItem(KEYS.images, imgTxt); wroteImages = true;
+      localStorage.setItem(KEYS.images, texts[KEYS.images]);
+      if (pausePoint('after-images')) return never();
+      testFail('write-shared');
+      localStorage.setItem(KEYS.shared, texts[KEYS.shared]);
       testFail('write-v2');
       // Última verificação antes de gravar: nunca escrever por cima de dados v2 que tenham aparecido entretanto.
       if (hasV2Data()) throw stepError('v2_exists', 'Apareceram dados da versão 2 durante a atualização. Nada foi substituído.');
-      localStorage.setItem(KEYS.v2, v2txt); wroteV2 = true;
+      localStorage.setItem(KEYS.v2, texts[KEYS.v2]);
       at('verify', 'A confirmar o resultado…');
       var back = JSON.parse(localStorage.getItem(KEYS.v2));
       var errs = V2.validateState(back);
       if (errs.length) throw stepError('verify', 'O resultado gravado não passou a verificação: ' + errs.join('; '));
       if (back.medications.length !== built.report.counts.medications || back.doseRecords.length !== built.report.counts.legacy) throw stepError('verify', 'As contagens do resultado não batem certo.');
-      if (localStorage.getItem(KEYS.images) !== imgTxt) throw stepError('verify', 'As fotografias não ficaram gravadas corretamente.');
+      if (localStorage.getItem(KEYS.images) !== texts[KEYS.images]) throw stepError('verify', 'As fotografias não ficaram gravadas corretamente.');
+      if (localStorage.getItem(KEYS.shared) !== texts[KEYS.shared]) throw stepError('verify', 'A referência das chaves partilhadas não ficou gravada corretamente.');
       return fingerprints(readV1Raw());
     }).then(function (fp2) {
       at('recheck', 'A confirmar que os dados antigos não mudaram…');
       var changed = V1_MED_KEYS.filter(function (k) { return fp2[k] !== fp1[k]; });
       if (changed.length) throw stepError('recheck', 'Os dados antigos foram alterados noutro separador durante a atualização. Fecha os outros separadores e tenta de novo.');
       testFail('pause-before-activate');
-      if (global.__DM_TEST_PAUSE) return new Promise(function () {}); // testes: simula um separador fechado a meio
+      if (pausePoint('before-activate')) return never();
       at('activate', 'A ativar a versão 2…');
-      writeSchemaDirect({ status: 'v2', migrationId: migrationId, startedAt: readSchema().startedAt || null, completedAt: new Date().toISOString(), backupKey: backupKey, fingerprints: fp1 });
+      writeSchemaDirect({ status: 'v2', migrationId: migrationId, startedAt: marker.startedAt, completedAt: new Date().toISOString(), backupKey: backupKey, fingerprints: fp1 });
       S.loadedStatus = 'v2'; S.migrator = false; S.v2cache = null;
       if (channel) channel.postMessage({ type: 'schema-changed' });
       emit('migrated', built.report);
+      checkSharedKeys(); // alterações antigas feitas durante a migração (depois da referência) são avisadas já, sem recarregar
       return { ok: true, report: built.report, backupKey: backupKey };
     }).catch(function (err) {
-      // Reverter só o que esta migração criou. As chaves v1 nunca foram tocadas; a cópia de segurança fica.
-      try { if (wroteV2) { var cur = JSON.parse(localStorage.getItem(KEYS.v2) || 'null'); if (cur && cur.migration && cur.migration.migrationId === migrationId) localStorage.removeItem(KEYS.v2); } } catch (e) { /* nada: em dúvida, não se apaga */ }
-      try { if (wroteImages) localStorage.removeItem(KEYS.images); } catch (e) { /* nada */ }
+      // Reverter só o que esta migração criou (diário). As chaves v1 nunca foram tocadas; a cópia de segurança fica.
       var info = { at: new Date().toISOString(), step: err.step || step, message: err.message };
       var schemaNow = readSchema();
-      if (schemaNow.status === 'migrating' && schemaNow.migrationId === migrationId) {
-        try { writeSchemaDirect({ status: 'v1', lastError: info, backupKey: backupKey }); S.loadedStatus = 'v1'; }
-        catch (e) { info.schemaRestoreFailed = true; /* fica "migrating": a recuperação no arranque seguinte trata disto */ }
-      } else if (schemaNow.status === 'v1') { S.loadedStatus = 'v1'; }
-      S.migrator = false;
-      if (channel) channel.postMessage({ type: 'schema-changed' });
-      var e2 = stepError(info.step, err.message, err); e2.info = info; throw e2;
+      var ours = schemaNow.status === 'migrating' && schemaNow.migrationId === migrationId;
+      return (ours ? rollbackDerived(schemaNow) : Promise.resolve(null)).then(function (rb) {
+        info.rollback = rb;
+        if (ours) {
+          if (rb && rb.foreignV2) {
+            // Há dados v2 que não são desta migração: fica "migrating" e a recuperação no arranque põe em "damaged", sem apagar.
+            info.schemaRestoreFailed = true;
+          } else {
+            try { writeSchemaDirect({ status: 'v1', lastError: info, backupKey: backupKey }); S.loadedStatus = 'v1'; }
+            catch (e) { info.schemaRestoreFailed = true; /* fica "migrating": a recuperação no arranque seguinte trata disto */ }
+          }
+        } else if (schemaNow.status === 'v1') { S.loadedStatus = 'v1'; }
+      }, function (rbErr) { info.rollbackError = rbErr.message; info.schemaRestoreFailed = true; }).then(function () {
+        S.migrator = false;
+        if (channel) channel.postMessage({ type: 'schema-changed' });
+        var e2 = stepError(info.step, err.message, err); e2.info = info; throw e2;
+      });
     });
   }
 
-  /** Recuperação de uma migração interrompida (estado "migrating" sem nenhum separador a migrar). Idempotente. */
+  /**
+   * Recuperação de uma migração interrompida (estado "migrating" sem nenhum separador a migrar).
+   * Usa o diário do marcador: só reverte o que a migração comprovadamente escreveu. Idempotente.
+   * Se encontrar dados v2 que não são da migração, não toca em nada e fica em recuperação ("damaged").
+   * Se a reversão falhar a meio, o marcador continua "migrating" e a próxima execução retoma sem perdas.
+   */
   function recoverIfInterrupted() {
     var s = readSchema();
     if (s.status !== 'migrating' || !hasLocks || !S.isWriter) return Promise.resolve(false);
-    return navigator.locks.query().then(function (q) {
-      var busy = (q.held || []).some(function (l) { return l.name === 'dailymed-migration'; });
-      if (busy) return false;
+    return navigator.locks.request('dailymed-migration', { mode: 'exclusive', ifAvailable: true }, function (lock) {
+      if (!lock) return false; // outro separador está mesmo a migrar
       var cur = readSchema(); if (cur.status !== 'migrating') return false;
-      var v2raw = localStorage.getItem(KEYS.v2);
-      if (v2raw !== null) {
-        var v2 = null; try { v2 = JSON.parse(v2raw); } catch (e) { v2 = null; }
-        var ours = v2 && v2.migration && cur.migrationId && v2.migration.migrationId === cur.migrationId;
-        if (!ours) {
-          // Dados v2 que não foram criados por esta migração: não se apagam nem se substituem. Fica em recuperação.
+      return rollbackDerived(cur).then(function (rb) {
+        if (rb.foreignV2) {
           S.loadedStatus = 'damaged'; S.damagedReadable = false; S.notices.damaged = 'migrating_with_foreign_v2';
-          diagnostics({ at: new Date().toISOString(), type: 'recovery_refused', reason: 'migrating_with_foreign_v2', migrationId: cur.migrationId || null });
+          diagnostics({ at: new Date().toISOString(), type: 'recovery_refused', reason: 'migrating_with_foreign_v2', migrationId: cur.migrationId || null, rollback: rb });
           emit('damaged', 'migrating_with_foreign_v2');
           return false;
         }
-        localStorage.removeItem(KEYS.v2); // resultado parcial desta migração (as chaves v1 e a cópia de segurança ficam)
-      }
-      localStorage.removeItem(KEYS.images);
-      localStorage.removeItem(KEYS.probe);
-      writeSchemaDirect({ status: 'v1', recoveredAt: new Date().toISOString(), lastError: { step: 'interrompida', message: 'A atualização anterior foi interrompida.' }, backupKey: cur.migrationId ? BACKUP_PREFIX + cur.migrationId : null });
-      S.loadedStatus = 'v1';
-      S.notices.recovered = true;
-      if (channel) channel.postMessage({ type: 'schema-changed' });
-      emit('recovered');
-      return true;
+        writeSchemaDirect({ status: 'v1', recoveredAt: new Date().toISOString(), lastError: { step: 'interrompida', message: 'A atualização anterior foi interrompida.' },
+          backupKey: cur.backupKey || (cur.migrationId ? BACKUP_PREFIX + cur.migrationId : null), recovery: rb });
+        if (rb.preserved.length) diagnostics({ at: new Date().toISOString(), type: 'recovery_preserved', keys: rb.preserved, migrationId: cur.migrationId || null });
+        S.loadedStatus = 'v1';
+        S.notices.recovered = true;
+        if (channel) channel.postMessage({ type: 'schema-changed' });
+        emit('recovered', rb);
+        return true;
+      });
+    }).catch(function (e) {
+      diagnostics({ at: new Date().toISOString(), type: 'recovery_failed', message: e.message });
+      S.notices.recoveryFailed = true; emit('notice', 'recoveryFailed');
+      if (global.console) console.warn('DailyMed: recuperação não concluída; será retomada no próximo arranque.', e);
+      return false;
     });
   }
 
@@ -580,7 +718,7 @@
       if (ev.key === KEYS.schema || ev.key === null) checkSchemaChange();
       if (ev.key === KEYS.v2 || ev.key === null) { S.v2cache = null; emit('data', 'external'); }
       if (mode() === 'v2' && EXTERNAL_MED_KEYS.indexOf(ev.key) !== -1) checkExternalV1();
-      if (mode() === 'v2' && (SHARED_KEYS.indexOf(ev.key) !== -1 || ev.key === null)) checkSharedKeys();
+      if (mode() === 'v2' && (SHARED_KEYS.indexOf(ev.key) !== -1 || ev.key === null)) onSharedKeyEvent();
     });
     electWriter();
   }

@@ -83,6 +83,9 @@ var V2UI = (function () {
     if (s.blockReason === 'outdated' || s.notices.outdated) {
       b('danger', 'A DailyMed foi atualizada ou alterada noutro separador. Este separador já não pode gravar. Recarrega a página para continuar.',
         '<button type="button" class="dm-banner-btn" data-action="reload">Recarregar</button>');
+    } else if (s.blockReason === 'migrating' && s.notices.recoveryFailed) {
+      b('danger', 'A recuperação de uma atualização interrompida não terminou. Nada foi apagado: os dados antigos e a cópia de segurança estão guardados. Recarrega a página para tentar de novo.',
+        '<button type="button" class="dm-banner-btn" data-action="reload">Recarregar</button>');
     } else if (s.blockReason === 'migrating') {
       b('warning', 'A atualização dos dados está a decorrer noutro separador. Este separador está só de leitura.');
     } else if (s.blockReason === 'other_tab') {
