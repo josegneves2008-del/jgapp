@@ -49,8 +49,26 @@
     return Math.round((b - a) / 864e5);
   }
 
-  /** Classifica um horário num dia, em hora local: normal, inexistente (salto de hora) ou repetido. */
+  /** Data de calendário real no formato AAAA-MM-DD (ano 2000–2100, meses 1–12, dias do mês certos, anos bissextos). */
+  function isValidDateStr(str) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(str == null ? '' : str));
+    if (!m) return false;
+    var y = +m[1], mo = +m[2], d = +m[3];
+    if (y < 2000 || y > 2100 || mo < 1 || mo > 12 || d < 1) return false;
+    var leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+    var dim = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1];
+    return d <= dim;
+  }
+  function isValidTimeStr(str) { return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(str == null ? '' : str)); }
+
+  /**
+   * Classifica um horário num dia, em hora LOCAL do dispositivo: normal, inexistente (salto de hora) ou repetido.
+   * A app usa deliberadamente o fuso horário do dispositivo (os lembretes seguem o relógio do utente).
+   * Data ou hora impossíveis → 'invalida' (nunca confundidas com mudança de hora).
+   * Na hora repetida, 'instant' é a PRIMEIRA ocorrência e 'second' a segunda.
+   */
   function classifySlot(dateStr, hhmm) {
+    if (!isValidDateStr(dateStr) || !isValidTimeStr(hhmm)) return { kind: 'invalida', instant: null };
     var y = +dateStr.slice(0, 4), mo = +dateStr.slice(5, 7), d = +dateStr.slice(8, 10);
     var parts = String(hhmm).split(':');
     var h = +parts[0], mi = +parts[1];
@@ -230,9 +248,19 @@
       if (UNITS.indexOf(op.unit) === -1) return reject('invalid_unit');
       if (!isPositiveAmount(op.amountPerDose)) return reject('invalid_amount');
       if (isConfigured(st, medId)) {
-        // Só muda a unidade e a quantidade por toma; o saldo não é alterado.
-        st.stockConfig[medId].unit = op.unit; st.stockConfig[medId].amountPerDose = Number(op.amountPerDose);
-        st.stockConfig[medId].updatedAt = op._now;
+        var cfg = st.stockConfig[medId];
+        // A unidade não muda depois de haver movimentos: o saldo e todos os movimentos estão nessa unidade
+        // (10 comprimidos não passam a ser 10 caixas). Não há conversão automática.
+        if (op.unit !== cfg.unit) return reject('unit_locked');
+        var newApd = Number(op.amountPerDose);
+        if (toCents(newApd) === toCents(cfg.amountPerDose)) return reject('no_change');
+        // A quantidade por toma só afeta tomas futuras e a estimativa de tomas restantes; os consumos já registados
+        // mantêm o valor original (e as reversões usam esse valor). Exige confirmação explícita e fica registada.
+        if (op.confirmAmountChange !== true) return reject('amount_change_needs_confirmation');
+        cfg.changes = cfg.changes || [];
+        cfg.changes.push({ field: 'amountPerDose', from: cfg.amountPerDose, to: newApd, at: op._now, operationId: op.operationId });
+        cfg.amountPerDose = newApd;
+        cfg.updatedAt = op._now;
         return { status: 'applied', movementIds: [] };
       }
       if (!isNonNegativeAmount(op.initialQuantity)) return reject('invalid_amount');
@@ -280,7 +308,7 @@
       var med = findMed(st, rem.medicationId);
       if (!med || med.removedAt) return reject('medication_removed');
       if (!rem.isActive) return reject('reminder_inactive');
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(op.date || ''))) return reject('invalid_date');
+      if (!isValidDateStr(op.date)) return reject('invalid_date');
       if ((rem.times || []).indexOf(op.time) === -1) return reject('unknown_time');
       if (op.status !== 'taken' && op.status !== 'not_taken') return reject('invalid_status');
       if (op.reason != null && NOT_TAKEN_REASONS.indexOf(op.reason) === -1) return reject('invalid_reason');
@@ -338,6 +366,10 @@
     snooze: function (st, op) {
       var minutes = Number(op.minutes);
       if ([15, 30, 60].indexOf(minutes) === -1) return reject('invalid_snooze');
+      var sk = String(op.slotKey || '').split('|');
+      if (sk.length !== 3 || !findReminder(st, sk[0])) return reject('unknown_reminder');
+      if (!isValidDateStr(sk[1])) return reject('invalid_date');
+      if (!isValidTimeStr(sk[2])) return reject('unknown_time');
       if (activeRecordForSlot(st, op.slotKey)) return reject('already_recorded');
       st.snoozes = st.snoozes.filter(function (s) { return s.slotKey !== op.slotKey; });
       st.snoozes.push({ slotKey: op.slotKey, until: new Date(Date.parse(op._now) + minutes * 60000).toISOString(), operationId: op.operationId });
@@ -583,7 +615,7 @@
     isCovered: isCovered, openConsumption: openConsumption, movementsFor: movementsFor, reversalOf: reversalOf,
     findMed: findMed, findReminder: findReminder, findRecord: findRecord,
     buildV2FromV1: buildV2FromV1, legacyRecordsFromHistory: legacyRecordsFromHistory, parseLegacyDate: parseLegacyDate, fnv1a32: fnv1a32,
-    localDateStr: localDateStr, daysBetween: daysBetween, toCents: toCents,
+    localDateStr: localDateStr, daysBetween: daysBetween, toCents: toCents, isValidDateStr: isValidDateStr, isValidTimeStr: isValidTimeStr,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (global) global.DailyMedV2 = api;

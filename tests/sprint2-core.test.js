@@ -87,12 +87,67 @@ describe('stock: movimentos', () => {
     expect(apply(st, { type: 'stock_entry', medicationId: 'nao_existe', quantity: 1 }).result.reason).toBe('stock_not_configured');
   });
 
-  it('reconfigurar não altera o saldo', () => {
+  it('unidade bloqueada depois de haver movimentos (10 comprimidos, 2 saídas, não passam a 8 caixas)', () => {
     let st = base(10);
-    st = must(st, { type: 'stock_config', medicationId: 'med_a', unit: 'cápsula', amountPerDose: 2, initialQuantity: 999 });
-    expect(V2.stockBalance(st, 'med_a')).toBe(10);
+    st = must(st, { type: 'stock_exit', medicationId: 'med_a', quantity: 1 });
+    st = must(st, { type: 'stock_exit', medicationId: 'med_a', quantity: 1 });
+    const before = JSON.stringify(st.stockMovements);
+    // 'caixa' nem sequer é uma unidade aceite; a mudança para outra unidade válida ('unidade') também é bloqueada.
+    expect(apply(st, { type: 'stock_config', medicationId: 'med_a', unit: 'caixa', amountPerDose: 1 }).result.reason).toBe('invalid_unit');
+    const out = apply(st, { type: 'stock_config', medicationId: 'med_a', unit: 'unidade', amountPerDose: 1, confirmAmountChange: true });
+    expect(out.result).toMatchObject({ status: 'rejected', reason: 'unit_locked' });
+    expect(out.changed).toBe(false);
+    expect(out.state.stockConfig.med_a.unit).toBe('comprimido');
+    expect(V2.stockBalance(out.state, 'med_a')).toBe(8);
+    expect(JSON.stringify(out.state.stockMovements)).toBe(before);
+  });
+
+  it('unidade bloqueada logo após a configuração (o stock inicial já é um movimento)', () => {
+    const st = base(10);
+    expect(apply(st, { type: 'stock_config', medicationId: 'med_a', unit: 'ml', amountPerDose: 1 }).result.reason).toBe('unit_locked');
+  });
+
+  it('reconfigurar com a mesma unidade e a mesma dose não faz nada; não altera o saldo', () => {
+    const st = base(10);
+    const out = apply(st, { type: 'stock_config', medicationId: 'med_a', unit: 'comprimido', amountPerDose: 1, initialQuantity: 999 });
+    expect(out.result.reason).toBe('no_change');
+    expect(V2.stockBalance(out.state, 'med_a')).toBe(10);
+  });
+
+  it('quantidade por toma: exige confirmação e fica registada', () => {
+    let st = base(10);
+    const noConfirm = apply(st, { type: 'stock_config', medicationId: 'med_a', unit: 'comprimido', amountPerDose: 2 });
+    expect(noConfirm.result.reason).toBe('amount_change_needs_confirmation');
+    expect(noConfirm.state.stockConfig.med_a.amountPerDose).toBe(1);
+    st = must(st, { type: 'stock_config', medicationId: 'med_a', unit: 'comprimido', amountPerDose: 2, confirmAmountChange: true, initialQuantity: 999 });
+    const cfg = st.stockConfig.med_a;
+    expect(cfg.amountPerDose).toBe(2);
+    expect(cfg.changes).toHaveLength(1);
+    expect(cfg.changes[0]).toMatchObject({ field: 'amountPerDose', from: 1, to: 2 });
+    expect(V2.stockBalance(st, 'med_a')).toBe(10); // saldo intacto, sem movimento novo
+    expect(V2.movementsFor(st, 'med_a')).toHaveLength(1);
     expect(V2.dosesRemaining(st, 'med_a')).toBe(5);
-    expect(st.stockConfig.med_a.unit).toBe('cápsula');
+  });
+
+  it('mudar a quantidade por toma não reescreve consumos antigos; a reversão usa o valor original', () => {
+    let st = base(10);
+    const out = apply(st, { type: 'record_dose', reminderId: 'rem_a', date: TODAY, time: '08:00', status: 'taken' });
+    st = out.state; const id = out.result.doseRecordId;
+    expect(V2.stockBalance(st, 'med_a')).toBe(9);
+    st = must(st, { type: 'stock_config', medicationId: 'med_a', unit: 'comprimido', amountPerDose: 2, confirmAmountChange: true });
+    const cons = V2.movementsFor(st, 'med_a').find((m) => m.type === 'consumption');
+    expect(cons.delta).toBe(-1);
+    expect(V2.findRecord(st, id).dose.amount).toBe(1);
+    st = must(st, { type: 'change_status', doseRecordId: id, to: 'not_taken' });
+    expect(V2.stockBalance(st, 'med_a')).toBe(10); // devolve 1, o valor que foi descontado
+    // nova toma usa a nova quantidade
+    st = must(st, { type: 'record_dose', reminderId: 'rem_a', date: TODAY, time: '20:00', status: 'taken' });
+    expect(V2.stockBalance(st, 'med_a')).toBe(8);
+  });
+
+  it('quantidade por toma inválida é rejeitada', () => {
+    const st = base(10);
+    for (const v of [0, -1, 'x', 1.234]) expect(apply(st, { type: 'stock_config', medicationId: 'med_a', unit: 'comprimido', amountPerDose: v, confirmAmountChange: true }).result.reason).toBe('invalid_amount');
   });
 
   it('reverter uma entrada: uma só vez, sem duplicar', () => {
@@ -280,7 +335,64 @@ describe('tomas', () => {
   });
 });
 
+describe('datas reais', () => {
+  it.each([
+    ['2026-02-31', false], ['2026-13-01', false], ['2026-04-31', false], ['2028-02-29', true], ['2027-02-29', false],
+    ['2026-00-10', false], ['2026-01-00', false], ['2024-02-29', true], ['2100-02-29', false], ['2000-02-29', true],
+    ['2026-1-01', false], ['26-01-01', false], ['', false], [null, false], ['2026-11-06', true],
+  ])('isValidDateStr(%s) = %s', (d, ok) => { expect(V2.isValidDateStr(d)).toBe(ok); });
+
+  // Registo com data impossível: recusado antes de qualquer outra verificação (incluindo a janela de 7 dias)
+  it.each(['2026-02-31', '2026-13-01', '2026-04-31', '2027-02-29'])('record_dose com %s é recusado e nada é gravado', (d) => {
+    const st = base(10);
+    const out = apply(st, { type: 'record_dose', reminderId: 'rem_a', date: d, time: '08:00', status: 'taken' });
+    expect(out.result.reason).toBe('invalid_date');
+    expect(out.changed).toBe(false);
+    expect(out.state.doseRecords).toHaveLength(0);
+    expect(V2.stockBalance(out.state, 'med_a')).toBe(10);
+  });
+
+  it('2028-02-29 é aceite (ano bissexto) quando está dentro da janela', () => {
+    const st = base(10);
+    const ctx = { now: '2028-02-29T12:00:00.000Z', today: '2028-02-29', timeZone: 'Europe/Lisbon' };
+    const out = V2.applyOperation(st, { operationId: 'bis1', type: 'record_dose', reminderId: 'rem_a', date: '2028-02-29', time: '08:00', status: 'taken' }, ctx);
+    expect(out.result.status).toBe('applied');
+    expect(V2.findRecord(out.state, out.result.doseRecordId).scheduledDate).toBe('2028-02-29');
+  });
+
+  it('datas impossíveis não são classificadas como mudança de hora', () => {
+    for (const d of ['2026-02-31', '2026-13-01', '2026-04-31', '2027-02-29']) expect(V2.classifySlot(d, '08:00').kind).toBe('invalida');
+    expect(V2.classifySlot('2026-03-29', '25:00').kind).toBe('invalida');
+    expect(V2.classifySlot('2028-02-29', '08:00').kind).toBe('normal');
+  });
+
+  it('adiar com data impossível é recusado', () => {
+    const st = base(10);
+    expect(apply(st, { type: 'snooze', slotKey: 'rem_a|2026-02-31|08:00', minutes: 15 }).result.reason).toBe('invalid_date');
+  });
+});
+
 describe('mudança de hora (Europe/Lisbon)', () => {
+  it('os testes correm mesmo em Europe/Lisbon', () => {
+    expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe('Europe/Lisbon');
+    expect(new Date('2026-07-01T12:00:00Z').getTimezoneOffset()).toBe(-60); // WEST
+    expect(new Date('2026-01-01T12:00:00Z').getTimezoneOffset()).toBe(0); // WET
+  });
+  it('a primeira ocorrência da hora repetida é a da hora de verão (00:30 UTC), a segunda é 01:30 UTC', () => {
+    const c = V2.classifySlot('2026-10-25', '01:30');
+    expect(new Date(c.instant).toISOString()).toBe('2026-10-25T00:30:00.000Z');
+    expect(new Date(c.second).toISOString()).toBe('2026-10-25T01:30:00.000Z');
+    expect(V2.classifySlot('2026-10-25', '00:59').kind).toBe('normal');
+    expect(V2.classifySlot('2026-10-25', '02:00').kind).toBe('normal');
+  });
+  it('salto de hora: 01:00–01:59 não existem; 00:59 e 02:00 existem', () => {
+    expect(V2.classifySlot('2026-03-29', '01:00').kind).toBe('inexistente');
+    expect(V2.classifySlot('2026-03-29', '01:59').kind).toBe('inexistente');
+    expect(V2.classifySlot('2026-03-29', '00:59').kind).toBe('normal');
+    const c = V2.classifySlot('2026-03-29', '02:00');
+    expect(c.kind).toBe('normal');
+    expect(new Date(c.instant).toISOString()).toBe('2026-03-29T01:00:00.000Z');
+  });
   it('29/03/2026: 01:30 não existe', () => {
     expect(V2.classifySlot('2026-03-29', '01:30').kind).toBe('inexistente');
     expect(V2.classifySlot('2026-03-29', '02:30').kind).toBe('normal');
