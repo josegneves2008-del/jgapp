@@ -6,9 +6,16 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:browser": "node tests/browser/sprint2.e2e.js"
+    "test:browser": "node tests/browser/sprint2.e2e.js",
+    "test:etapa1": "node tests/browser/run-etapa1.js",
+    "test:all": "npm test && npm run test:browser && npm run test:etapa1",
+    "browsers": "playwright install chromium"
   },
   "devDependencies": {
-    "vitest": "^1.6.0"
+    "playwright": "1.63.0",
+    "vitest": "5.1.0"
+  },
+  "engines": {
+    "node": "22.x"
   }
 }
