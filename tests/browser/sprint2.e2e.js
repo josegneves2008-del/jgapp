@@ -695,7 +695,8 @@ async function main() {
       chk('chave partilhada (' + k + '): aviso de alteração por versão antiga', b.includes('versão antiga') && b.includes('partilhados'), b);
     }
     // gravações da própria v2 noutra aba não dão aviso falso
-    await clear();
+    chk('avisos do separador de escrita chegam ao outro separador v2', (await old.textContent('#dm-banners')).includes('versão antiga'));
+    await clear(); await old.evaluate(() => { DMStore.dismissNotice('external'); DMStore.dismissNotice('sharedExternal'); });
     await a.evaluate(() => { setSettings({ theme: 'light', notifications: false }); addRecyclingDelivery({ id: 'rc10', volume: 'pequeno', date: '2026-11-01' }); setTravelChecklistItem('t2', true); });
     await old.waitForTimeout(400);
     chk('gravações da v2 não geram aviso no outro separador v2', !(await old.textContent('#dm-banners')).includes('versão antiga'));
@@ -740,6 +741,157 @@ async function main() {
     const tampered = JSON.parse(JSON.stringify(copy)); tampered.keys.dailymed_v2 = tampered.keys.dailymed_v2.replace('Medicamento DEMO A', 'Medicamento DEMO X');
     chk('ficheiro alterado deixa de bater com o SHA-256', require('crypto').createHash('sha256').update(canon(tampered), 'utf8').digest('hex') !== file.checksum);
     chk('nome do ficheiro inclui o início do checksum', d.suggestedFilename().includes(file.checksum.slice(0, 8)));
+    await ctx.close();
+  }
+
+  current = 'chaves partilhadas sem recarregar';
+  for (const [key, val, label] of [
+    ['dailymed_settings', '{"notifications":true,"theme":"dark"}', 'definições'],
+    ['dailymed_recycling_deliveries', '[{"id":"rc_antigo","volume":"grande","date":"2026-11-02"}]', 'entregas de reciclagem'],
+    ['dailymed_travel_checklist', '{"item_antigo":true}', 'lista de viagem'],
+  ]) {
+    const ctx = await fresh(); const a = await newPage(ctx, errors);
+    await seed(a, v1Data()); await a.reload(); await ready(a); await waitWriter(a);
+    const old = await newPage(ctx, errors); await old.goto(BASE + '#home'); await ready(old); // separador da versão antiga
+    const t = await migrateViaUi(a); // sem recarregar a página depois
+    const ref = JSON.parse(await a.evaluate(() => localStorage.getItem('dailymed_v2_shared')));
+    chk(key + ': referência criada pela própria migração', t.includes('concluída') && ref && ref[key] !== undefined, ref);
+    chk(key + ': separador migrado está em v2 sem recarregar', (await status(a)).mode === 'v2');
+    const v2tab = await newPage(ctx, errors); await v2tab.goto(BASE + '#home'); await ready(v2tab); await v2tab.waitForTimeout(300);
+    chk(key + ': sem avisos antes de qualquer alteração', !(await a.textContent('#dm-banners')).includes('versão antiga') && !(await v2tab.textContent('#dm-banners')).includes('versão antiga'));
+    // 1) O separador antigo (código sem DMStore) grava diretamente — ANTES de qualquer gravação da v2
+    await old.evaluate(([k, v]) => localStorage.setItem(k, v), [key, val]); await a.waitForTimeout(500);
+    const b = await a.textContent('#dm-banners');
+    chk(key + ': aviso de conflito no separador migrado, sem recarregar', b.includes('versão antiga') && b.includes(label), b);
+    chk(key + ': aviso também no outro separador v2', (await v2tab.textContent('#dm-banners')).includes(label));
+    chk(key + ': a alteração (partilhada) foi preservada', await a.evaluate((k) => localStorage.getItem(k), key) === val);
+    // 2) Gravações da própria v2 depois: não podem dar novos avisos (nem no próprio nem no outro separador v2)
+    await a.evaluate(() => DMStore.dismissNotice('sharedExternal')); await v2tab.evaluate(() => DMStore.dismissNotice('sharedExternal'));
+    const own = await a.evaluate(() => [setSettings({ theme: 'light' }), addRecyclingDelivery({ id: 'rc_v2', volume: 'pequeno', date: '2026-11-03' }), setTravelChecklistItem('item_v2', true)]);
+    await v2tab.waitForTimeout(500);
+    const ba = await a.textContent('#dm-banners'), bb = await v2tab.textContent('#dm-banners');
+    chk(key + ': gravações da v2 não dão aviso', own.every((x) => x !== false) && !ba.includes('versão antiga') && !bb.includes('versão antiga'), { own, ba, bb });
+    await ctx.close();
+  }
+  {
+    // Alteração antiga DURANTE a migração (depois da referência e antes da ativação): avisada logo após ativar.
+    const ctx = await fresh(); const a = await newPage(ctx, errors);
+    await seed(a, v1Data()); await a.reload(); await ready(a); await waitWriter(a);
+    await a.evaluate(() => {
+      const orig = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (k, v) { orig.call(this, k, v); if (k === 'dailymed_v2') { Storage.prototype.setItem = orig; orig.call(localStorage, 'dailymed_settings', '{"notifications":true,"theme":"dark","mudado":"durante"}'); } };
+    });
+    await migrateViaUi(a); await a.waitForTimeout(300);
+    chk('alteração partilhada durante a migração: avisada logo após a ativação', (await a.textContent('#dm-banners')).includes('definições'));
+    await ctx.close();
+  }
+
+  {
+    // Instalação migrada por uma versão anterior desta app (sem dailymed_v2_shared): referência reconstruída da cópia de segurança.
+    const ctx = await fresh(); const a = await newPage(ctx, errors);
+    await seed(a, v1Data()); await a.reload(); await ready(a); await waitWriter(a); await migrateViaUi(a);
+    await a.evaluate(() => { localStorage.removeItem('dailymed_v2_shared'); localStorage.setItem('dailymed_recycling_deliveries', '[{"id":"rc_entretanto"}]'); });
+    await a.reload(); await ready(a); await waitWriter(a); await a.waitForTimeout(400);
+    chk('sem referência: alteração desde a migração detetada pela cópia de segurança', (await a.textContent('#dm-banners')).includes('entregas de reciclagem'));
+    // gravação da v2 sem referência: não cria uma referência parcial que esconda outras chaves
+    await a.evaluate(() => { localStorage.removeItem('dailymed_v2_shared'); DMStore.dismissNotice('sharedExternal'); setSettings({ theme: 'light' }); });
+    const ref = JSON.parse(await a.evaluate(() => localStorage.getItem('dailymed_v2_shared')));
+    chk('gravação da v2 sem referência: referência completa (3 chaves)', ref && Object.keys(ref).length === 3, ref);
+    await ctx.close();
+  }
+
+  {
+    // Regressão de uma condição de corrida: gravações da v2 em sequência, vistas por outro separador v2 (10 repetições).
+    let falsos = 0;
+    for (let i = 0; i < 10; i++) {
+      const ctx = await fresh(); const a = await newPage(ctx, errors);
+      await seed(a, v1Data()); await a.reload(); await ready(a); await waitWriter(a); await migrateViaUi(a);
+      const r = await newPage(ctx, errors); await r.goto(BASE + '#home'); await ready(r);
+      await a.evaluate(() => { setSettings({ theme: 'light' }); addRecyclingDelivery({ id: 'x' + Math.random() }); setTravelChecklistItem('t' + Math.random(), true); setSettings({ notifications: true }); });
+      await r.waitForTimeout(350);
+      if (await r.evaluate(() => !!DMStore.status().notices.sharedExternal) || await a.evaluate(() => !!DMStore.status().notices.sharedExternal)) falsos++;
+      await ctx.close();
+    }
+    chk('gravações da v2 em sequência: 0 falsos avisos em 10 repetições', falsos === 0, falsos);
+  }
+
+  current = 'recuperação: propriedade das imagens';
+  {
+    const PRE_IMAGES = JSON.stringify({ img_pre_1: PNG_1x1 });
+    const FOREIGN_IMAGES = JSON.stringify({ img_outra_operacao: PNG_1x1, extra: PNG_1x1 });
+    const IGNORE = (k) => k === 'dailymed_schema' || k.startsWith('dailymed_backup_v1_') || k === 'dailymed_v2_diagnostics';
+    function sameExceptOwn(before, after) {
+      const diff = [];
+      for (const k of new Set(Object.keys(before).concat(Object.keys(after)))) { if (IGNORE(k)) continue; if (before[k] !== after[k]) diff.push(k); }
+      return diff;
+    }
+    async function interrupted(name, { pre, pause, tamper, failRecovery }) {
+      const ctx = await fresh();
+      // Hook de falha na recuperação, ativo só enquanto existir a chave de teste (fora do prefixo dailymed_)
+      await ctx.addInitScript(() => { try { const f = localStorage.getItem('__dm_test_fail'); if (f) window.__DM_TEST_FAIL = JSON.parse(f); } catch (e) { /* */ } });
+      const a = await newPage(ctx, errors);
+      await seed(a, v1Data(pre ? { dailymed_v2_images: PRE_IMAGES } : {})); await a.reload(); await ready(a); await waitWriter(a);
+      const before = await snapshot(a);
+      await a.evaluate((p) => { window.__DM_TEST_PAUSE = p; DMStore.migrate(); }, pause);
+      await a.waitForFunction(() => { const s = JSON.parse(localStorage.getItem('dailymed_schema') || '{}'); return s.status === 'migrating' && s.journal && s.journal.keys.dailymed_v2_images.intent; });
+      await a.waitForTimeout(200);
+      const mid = await snapshot(a);
+      const marker = JSON.parse(mid.dailymed_schema);
+      if (pause === 'after-images') chk(name + ': imagens da migração escritas antes da interrupção', mid.dailymed_v2_images !== (pre ? PRE_IMAGES : undefined));
+      if (pause === 'before-images') chk(name + ': interrompida antes de escrever imagens', mid.dailymed_v2_images === (pre ? PRE_IMAGES : undefined));
+      chk(name + ': diário persistente no marcador (pre/intent)', marker.journal.keys.dailymed_v2_images.pre === (pre ? marker.journal.keys.dailymed_v2_images.pre : 'absent') && /^sha256:/.test(marker.journal.keys.dailymed_v2_images.intent));
+      if (tamper) await a.evaluate((v) => localStorage.setItem('dailymed_v2_images', v), tamper);
+      if (failRecovery) await a.evaluate((f) => localStorage.setItem('__dm_test_fail', JSON.stringify(f)), failRecovery);
+      await a.close(); // encerramento inesperado: o estado em memória perde-se
+      const b = await newPage(ctx, errors); await b.goto(BASE + '#home'); await ready(b); await waitWriter(b); await b.waitForTimeout(600);
+      let after = await snapshot(b);
+      let sc = JSON.parse(after.dailymed_schema);
+      if (failRecovery) {
+        chk(name + ': falha na recuperação deixa o marcador em "migrating"', sc.status === 'migrating', sc.status);
+        chk(name + ': falha na recuperação não perde as imagens anteriores (estão no conteúdo atual ou na cópia)',
+          pre ? (after.dailymed_v2_images === PRE_IMAGES || JSON.parse(after[marker.backupKey]).keys.dailymed_v2_images === PRE_IMAGES) : true);
+        chk(name + ': falha registada no diagnóstico', JSON.parse(after.dailymed_v2_diagnostics || '[]').some((d) => d.type === 'recovery_failed'));
+        chk(name + ': aviso claro de recuperação por terminar', (await b.textContent('#dm-banners')).includes('não terminou'));
+        await b.evaluate(() => localStorage.removeItem('__dm_test_fail'));
+        await b.reload(); await ready(b); await waitWriter(b); await b.waitForTimeout(600);
+        after = await snapshot(b); sc = JSON.parse(after.dailymed_schema);
+      }
+      chk(name + ': recuperação volta a v1', sc.status === 'v1' && (await status(b)).mode === 'v1', sc.status);
+      const expectImages = tamper ? tamper : (pre ? PRE_IMAGES : undefined);
+      chk(name + ': dailymed_v2_images = ' + (tamper ? 'conteúdo da outra operação (preservado)' : pre ? 'conteúdo anterior (reposto/intacto)' : 'ausente, como antes'), after.dailymed_v2_images === expectImages);
+      const diff = sameExceptOwn(Object.assign({}, before, tamper ? { dailymed_v2_images: tamper } : {}), after).filter((k) => k !== '__dm_test_fail');
+      chk(name + ': nenhuma outra chave alterada ou apagada (v1 incluídas)', diff.length === 0, diff);
+      chk(name + ': sem dados v2 nem referência partilhada deixados pela migração', !('dailymed_v2' in after) && !('dailymed_v2_shared' in after));
+      chk(name + ': cópia de segurança mantida', Object.keys(after).some((k) => k.startsWith('dailymed_backup_v1_')));
+      if (tamper) chk(name + ': conteúdo de outra operação ficou registado como preservado', (sc.recovery && sc.recovery.preserved.includes('dailymed_v2_images')));
+      // recuperação repetida: nada muda
+      const again = await b.evaluate(() => DMStore.recoverIfInterrupted());
+      const after2 = await snapshot(b);
+      chk(name + ': recuperação repetida não faz nada', again === false && JSON.stringify(after2) === JSON.stringify(after));
+      // mesmo que o marcador "migrating" antigo voltasse (ex.: gravação do marcador perdida), recuperar outra vez não perde nada
+      await b.evaluate((m) => localStorage.setItem('dailymed_schema', m), mid.dailymed_schema);
+      await b.reload(); await ready(b); await waitWriter(b); await b.waitForTimeout(600);
+      const after3 = await snapshot(b);
+      chk(name + ': segunda recuperação com o mesmo diário: conteúdo igual', after3.dailymed_v2_images === after.dailymed_v2_images && sameExceptOwn(after, after3).length === 0 && JSON.parse(after3.dailymed_schema).status === 'v1');
+      await ctx.close();
+    }
+    await interrupted('antes das imagens, sem imagens anteriores', { pre: false, pause: 'before-images' });
+    await interrupted('antes das imagens, com imagens anteriores', { pre: true, pause: 'before-images' });
+    await interrupted('depois das imagens, sem imagens anteriores', { pre: false, pause: 'after-images' });
+    await interrupted('depois das imagens, com imagens anteriores', { pre: true, pause: 'after-images' });
+    await interrupted('imagens de outra operação', { pre: true, pause: 'after-images', tamper: FOREIGN_IMAGES });
+    await interrupted('falha ao repor imagens anteriores', { pre: true, pause: 'after-images', failRecovery: { 'recover-restore': true } });
+    await interrupted('falha ao remover imagens da migração', { pre: false, pause: 'after-images', failRecovery: { 'recover-remove': true } });
+
+    // Falha normal (sem espaço ao gravar dailymed_v2) com imagens anteriores: a reversão imediata repõe-nas
+    const ctx = await fresh(); const p = await newPage(ctx, errors);
+    await seed(p, v1Data({ dailymed_v2_images: PRE_IMAGES })); await p.reload(); await ready(p); await waitWriter(p);
+    const before = await snapshot(p);
+    const r = await p.evaluate(() => { window.__DM_TEST_FAIL = { 'write-v2': 'quota' }; return DMStore.migrate().then(() => 'ok', (e) => e.info.rollback); });
+    const after = await snapshot(p);
+    chk('falha ao gravar v2 com imagens anteriores: imagens repostas da cópia', after.dailymed_v2_images === PRE_IMAGES && r.restored.includes('dailymed_v2_images'), r);
+    chk('falha ao gravar v2: nenhuma outra chave alterada', sameExceptOwn(before, after).length === 0, sameExceptOwn(before, after));
+    chk('cópia de segurança inclui as imagens anteriores', JSON.parse(after[Object.keys(after).find((k) => k.startsWith('dailymed_backup_v1_'))]).keys.dailymed_v2_images === PRE_IMAGES);
     await ctx.close();
   }
 
