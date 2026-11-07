@@ -22,6 +22,7 @@
     alerts: 'dailymed_v2_alerts',
     diagnostics: 'dailymed_v2_diagnostics',
     probe: 'dailymed_space_probe',
+    shared: 'dailymed_v2_shared',
   };
   var BACKUP_PREFIX = 'dailymed_backup_v1_';
   var V1_MED_KEYS = ['dailymed_medications', 'dailymed_reminders', 'dailymed_medication_history', 'dailymed_medication_alerts'];
@@ -29,6 +30,21 @@
     dailymed_medications: 'medicamentos', dailymed_reminders: 'lembretes',
     dailymed_medication_history: 'histórico de tomas', dailymed_medication_alerts: 'alertas',
   };
+  /*
+   * Chaves que a versão antiga da app (v1, sem DMStore) pode gravar, e o que cada uma significa para a v2
+   * (levantamento feito em js/storage.js e js/app.js das branches main e etapa-1-correcoes-urgentes):
+   *  A. Dados de medicação — a v2 tem cópia própria em dailymed_v2; alterações antigas NÃO são aplicadas → aviso:
+   *     dailymed_medications, dailymed_reminders, dailymed_medication_history          (EXTERNAL_MED_KEYS)
+   *  B. Partilhadas — a v2 usa exatamente a mesma chave e formato; a alteração antiga fica em vigor → aviso de conflito:
+   *     dailymed_settings, dailymed_recycling_deliveries, dailymed_travel_checklist  (SHARED_KEYS)
+   *  C. Sem impacto nos dados da v2 → ignoradas (sem avisos falsos):
+   *     dailymed_medication_alerts (a v2 usa dailymed_v2_alerts), dailymed_last_dica (rotação de dicas),
+   *     dailymed_geo_* (cache de mapas), dailymed_onboarding_done (só passa a "true").
+   */
+  var EXTERNAL_MED_KEYS = ['dailymed_medications', 'dailymed_reminders', 'dailymed_medication_history'];
+  var SHARED_KEYS = ['dailymed_settings', 'dailymed_recycling_deliveries', 'dailymed_travel_checklist'];
+  var SHARED_LABEL = { dailymed_settings: 'definições', dailymed_recycling_deliveries: 'entregas de reciclagem', dailymed_travel_checklist: 'lista de viagem' };
+  var SHARED_FP_KEY = 'dailymed_v2_shared';
 
   var V2 = global.DailyMedV2;
   var Img = global.DailyMedImages;
@@ -38,16 +54,69 @@
 
   var S = {
     loadedStatus: 'v1', isWriter: false, migrator: false, releaseWriter: null,
-    v2cache: null, listeners: [], notices: {}, writerWaiting: false,
+    v2cache: null, listeners: [], notices: {}, writerWaiting: false, damagedReadable: false,
   };
 
   function emit(kind, detail) { S.listeners.forEach(function (fn) { try { fn(kind, detail); } catch (e) { if (global.console) console.error(e); } }); }
   function onChange(fn) { S.listeners.push(fn); }
 
   // ---------- estado da versão ----------
+  var VALID_STATUS = ['v1', 'migrating', 'v2'];
+  /**
+   * Marcador tal como está gravado. Ausente → { status: 'v1', absent: true }.
+   * Ilegível ou com estado desconhecido → { status: 'corrupt' } (nunca é tratado como v1).
+   */
   function readSchema() {
-    try { var raw = localStorage.getItem(KEYS.schema); if (!raw) return { status: 'v1' }; var s = JSON.parse(raw); return s && s.status ? s : { status: 'v1' }; }
-    catch (e) { return { status: 'v1', unreadable: true }; }
+    var raw;
+    try { raw = localStorage.getItem(KEYS.schema); } catch (e) { return { status: 'corrupt', reason: 'unreadable' }; }
+    if (raw === null) return { status: 'v1', absent: true };
+    try {
+      var s = JSON.parse(raw);
+      if (s && typeof s === 'object' && VALID_STATUS.indexOf(s.status) !== -1) return s;
+      return { status: 'corrupt', reason: 'unknown_status', raw: raw.slice(0, 200) };
+    } catch (e) { return { status: 'corrupt', reason: 'invalid_json', raw: raw.slice(0, 200) }; }
+  }
+  function hasV2Data() { try { return localStorage.getItem(KEYS.v2) !== null; } catch (e) { return true; } }
+
+  /**
+   * Estado efetivo da instalação, combinando o marcador com a presença de dados v2.
+   * Regra de segurança: se existem dados em dailymed_v2, a instalação NUNCA é tratada como v1 —
+   * seja qual for o marcador (ausente, ilegível, desconhecido ou "v1"). Fica em recuperação ("damaged").
+   * Versão rápida: usada em cada verificação de escrita (não valida o conteúdo).
+   */
+  function effectiveStatus() {
+    var sc = readSchema();
+    var v2 = hasV2Data();
+    if (sc.status === 'corrupt') return 'damaged';
+    if (sc.status === 'migrating') return 'migrating';
+    if (sc.status === 'v2') return v2 ? 'v2' : 'damaged';
+    return v2 ? 'damaged' : 'v1';
+  }
+
+  /** Diagnóstico completo (arranque e ecrã de recuperação). Não escreve nada. */
+  function assessInstallation() {
+    var sc = readSchema(), raw = null, st = null, parseOk = false, errors = [];
+    try { raw = localStorage.getItem(KEYS.v2); } catch (e) { raw = null; }
+    if (raw !== null) {
+      try { st = JSON.parse(raw); parseOk = !!st && typeof st === 'object'; } catch (e) { parseOk = false; }
+      if (parseOk) errors = V2.validateState(st); else errors = ['dailymed_v2 não é JSON válido'];
+    }
+    var hasV2 = raw !== null, v2Valid = hasV2 && parseOk && errors.length === 0;
+    var res = { schema: sc, hasV2: hasV2, v2Valid: v2Valid, v2Errors: errors.slice(0, 5), status: 'v1', reason: null, counts: null, lastActivity: null };
+    if (v2Valid) {
+      res.counts = { medications: st.medications.length, reminders: st.reminders.length, doseRecords: st.doseRecords.length, stockMovements: st.stockMovements.length };
+      var last = st.operations.length ? st.operations[st.operations.length - 1].at : (st.migration && st.migration.completedAt) || null;
+      res.lastActivity = last;
+      res.migrationId = st.migration ? st.migration.migrationId : null;
+    }
+    if (sc.status === 'corrupt') { res.status = 'damaged'; res.reason = hasV2 ? 'schema_corrupt_with_v2' : 'schema_corrupt'; }
+    else if (sc.status === 'migrating') { res.status = 'migrating'; }
+    else if (sc.status === 'v2') {
+      if (!hasV2) { res.status = 'damaged'; res.reason = 'v2_without_data'; }
+      else if (!v2Valid) { res.status = 'damaged'; res.reason = 'v2_corrupt'; }
+      else res.status = 'v2';
+    } else if (hasV2) { res.status = 'damaged'; res.reason = sc.absent ? 'schema_missing_with_v2' : 'v1_with_v2_data'; }
+    return res;
   }
   function writeSchemaDirect(obj) {
     var txt = JSON.stringify(obj);
@@ -55,7 +124,8 @@
     localStorage.setItem(KEYS.schema, txt);
     if (localStorage.getItem(KEYS.schema) !== txt) throw stepError('schema', 'O marcador de versão não ficou gravado.');
   }
-  function mode() { return S.loadedStatus === 'v2' ? 'v2' : 'v1'; }
+  // Em recuperação com dados v2 válidos, mostramos esses dados (só leitura) em vez dos dados v1.
+  function mode() { return S.loadedStatus === 'v2' || (S.loadedStatus === 'damaged' && S.damagedReadable) ? 'v2' : 'v1'; }
 
   // Ganchos de teste (só usados pelos testes no browser para simular falhas).
   function testFail(point) {
@@ -66,7 +136,8 @@
 
   // ---------- permissões de escrita ----------
   function writeBlockReason() {
-    var cur = readSchema().status;
+    if (S.loadedStatus === 'damaged') return 'damaged';
+    var cur = effectiveStatus();
     if (cur !== S.loadedStatus) return 'outdated';
     if (cur === 'migrating') return S.migrator ? null : 'migrating';
     if (hasLocks) return S.isWriter ? null : 'other_tab';
@@ -88,8 +159,42 @@
     }
     var r = writeBlockReason();
     if (r) return blocked(r);
-    try { localStorage.setItem(key, value); return true; }
+    try {
+      // Em v2, regista primeiro a impressão do valor: assim os outros separadores reconhecem a gravação como da v2.
+      if (mode() === 'v2' && SHARED_KEYS.indexOf(key) !== -1) setSharedFp(key, value);
+      localStorage.setItem(key, value); return true;
+    }
     catch (e) { emit('storage_error', e.name || 'erro'); return false; }
+  }
+  function sharedFp(value) { return value == null ? 'absent' : V2.fnv1a32(value); }
+  function readSharedFps() { try { return JSON.parse(localStorage.getItem(SHARED_FP_KEY) || 'null'); } catch (e) { return null; } }
+  function setSharedFp(key, value) {
+    var map = readSharedFps() || {};
+    map[key] = sharedFp(value);
+    localStorage.setItem(SHARED_FP_KEY, JSON.stringify(map));
+  }
+  /**
+   * Em v2: deteta gravações feitas às chaves partilhadas (B) por uma versão antiga. Não as desfaz (o formato é o mesmo),
+   * mas avisa, porque há risco de gravações em conflito. Sem referência guardada → cria-a sem avisar.
+   */
+  function checkSharedKeys() {
+    if (mode() !== 'v2') return [];
+    var map = readSharedFps();
+    var cur = {}; SHARED_KEYS.forEach(function (k) { cur[k] = sharedFp(localStorage.getItem(k)); });
+    if (!map) { if (canWrite()) { try { localStorage.setItem(SHARED_FP_KEY, JSON.stringify(cur)); } catch (e) { /* nada */ } } return []; }
+    var changed = SHARED_KEYS.filter(function (k) { return map[k] !== undefined && map[k] !== cur[k]; });
+    var missing = SHARED_KEYS.filter(function (k) { return map[k] === undefined; });
+    if ((changed.length || missing.length) && canWrite()) {
+      var next = {}; SHARED_KEYS.forEach(function (k) { next[k] = cur[k]; });
+      try { localStorage.setItem(SHARED_FP_KEY, JSON.stringify(next)); } catch (e) { /* nada */ }
+    }
+    if (!changed.length) return [];
+    var labels = changed.map(function (k) { return SHARED_LABEL[k]; });
+    S.notices.sharedExternal = 'Uma versão antiga da DailyMed aberta noutro separador alterou: ' + labels.join(', ') +
+      '. Estes dados são partilhados pelas duas versões, por isso a alteração ficou. Fecha os separadores antigos para evitar gravações em conflito.';
+    if (canWrite()) diagnostics({ at: new Date().toISOString(), type: 'shared_external_change', keys: changed });
+    emit('external', changed);
+    return changed;
   }
 
   // ---------- separador de escrita (Web Locks) ----------
@@ -120,7 +225,7 @@
   }
 
   function checkSchemaChange() {
-    var cur = readSchema().status;
+    var cur = effectiveStatus();
     if (cur !== S.loadedStatus) { S.notices.outdated = true; emit('outdated', cur); }
   }
 
@@ -148,6 +253,7 @@
 
   /** Aplica uma operação v2 e grava-a numa só chamada a setItem. Síncrono: só o separador de escrita chega aqui. */
   function applyV2(op) {
+    if (S.loadedStatus === 'damaged') { blocked('damaged'); return { status: 'read_only_tab', reason: 'damaged' }; }
     if (mode() !== 'v2') return { status: 'blocked', reason: 'not_v2' };
     var r = writeBlockReason();
     if (r) { blocked(r); return { status: 'read_only_tab', reason: r }; }
@@ -217,7 +323,8 @@
     var st = getV2(); if (!st || !st.v1Sync || !st.v1Sync.fingerprints) return Promise.resolve(null);
     var raw = readV1Raw();
     return fingerprints(raw).then(function (fp) {
-      var changed = V1_MED_KEYS.filter(function (k) { return fp[k] !== st.v1Sync.fingerprints[k]; });
+      // Só as chaves de medicação (A). dailymed_medication_alerts não é usada pela v2: ignorada para não dar avisos falsos.
+      var changed = EXTERNAL_MED_KEYS.filter(function (k) { return fp[k] !== st.v1Sync.fingerprints[k]; });
       if (!changed.length) return null;
       var labels = changed.map(function (k) { return V1_KEY_LABEL[k]; });
       S.notices.external = 'Foram feitas alterações numa versão antiga da DailyMed noutro separador (' + labels.join(', ') +
@@ -253,14 +360,15 @@
     var v1Size = 0; allDailymedKeys().forEach(function (k) { v1Size += (localStorage.getItem(k) || '').length; });
     return {
       ok: !!built.state, report: built.report, sizes: { v2: v2Size, images: imgSize, backup: v1Size },
-      locks: hasLocks, writer: S.isWriter, status: readSchema().status, loadedStatus: S.loadedStatus,
+      locks: hasLocks, writer: S.isWriter, status: effectiveStatus(), loadedStatus: S.loadedStatus, hasV2Data: hasV2Data(),
     };
   }
 
   function makeBackupObject(migrationId, fp) {
     var keys = {};
     allDailymedKeys().forEach(function (k) {
-      if (k.indexOf(BACKUP_PREFIX) === 0 || k === KEYS.schema || k === KEYS.v2 || k === KEYS.images || k === KEYS.probe || k.indexOf('dailymed_geo_') === 0) return;
+      // dailymed_v2_images entra na cópia: se existir sem dailymed_v2 (resto de uma tentativa anterior), fica guardado antes de ser substituído.
+      if (k.indexOf(BACKUP_PREFIX) === 0 || k === KEYS.schema || k === KEYS.v2 || k === KEYS.probe || k.indexOf('dailymed_geo_') === 0) return;
       keys[k] = localStorage.getItem(k);
     });
     return { format: 'dailymed-backup-v1', createdAt: new Date().toISOString(), migrationId: migrationId, fingerprints: fp, keys: keys };
@@ -282,7 +390,8 @@
     onStep = onStep || function () {};
     if (!hasLocks) return Promise.reject(stepError('locks', 'Este browser não permite fazer a atualização com segurança.'));
     if (!S.isWriter) return Promise.reject(stepError('writer', 'A DailyMed está aberta noutro separador. Usa só um separador para atualizar.'));
-    if (S.loadedStatus !== 'v1' || readSchema().status !== 'v1') return Promise.reject(stepError('status', 'Os dados não estão na versão 1.'));
+    if (hasV2Data()) return Promise.reject(stepError('v2_exists', 'Já existem dados da versão 2 neste browser. A atualização não pode ser feita por cima deles.'));
+    if (S.loadedStatus !== 'v1' || effectiveStatus() !== 'v1') return Promise.reject(stepError('status', 'Os dados não estão na versão 1.'));
     return navigator.locks.request('dailymed-migration', { mode: 'exclusive', ifAvailable: true }, function (lock) {
       if (!lock) throw stepError('busy', 'Já está a decorrer uma atualização.');
       return runMigration(onStep);
@@ -303,6 +412,7 @@
       built = V2.buildV2FromV1({ medications: raw1.dailymed_medications, reminders: raw1.dailymed_reminders, history: raw1.dailymed_medication_history },
         { validateImage: validateImage, appVersion: APP_VERSION, migrationId: migrationId, fingerprints: fp1, now: new Date().toISOString() });
       if (!built.state) throw stepError('validate', 'Os dados atuais têm problemas e não podem ser atualizados: ' + built.report.errors.join(' '));
+      if (hasV2Data() || effectiveStatus() !== 'v1') throw stepError('v2_exists', 'Já existem dados da versão 2 neste browser. A atualização foi cancelada.');
       at('schema-pending', 'A marcar a atualização como pendente…');
       writeSchemaDirect({ status: 'migrating', migrationId: migrationId, startedAt: new Date().toISOString(), tabId: tabId });
       S.loadedStatus = 'migrating'; S.migrator = true;
@@ -321,6 +431,8 @@
       testFail('write-images');
       localStorage.setItem(KEYS.images, imgTxt); wroteImages = true;
       testFail('write-v2');
+      // Última verificação antes de gravar: nunca escrever por cima de dados v2 que tenham aparecido entretanto.
+      if (hasV2Data()) throw stepError('v2_exists', 'Apareceram dados da versão 2 durante a atualização. Nada foi substituído.');
       localStorage.setItem(KEYS.v2, v2txt); wroteV2 = true;
       at('verify', 'A confirmar o resultado…');
       var back = JSON.parse(localStorage.getItem(KEYS.v2));
@@ -343,7 +455,7 @@
       return { ok: true, report: built.report, backupKey: backupKey };
     }).catch(function (err) {
       // Reverter só o que esta migração criou. As chaves v1 nunca foram tocadas; a cópia de segurança fica.
-      try { if (wroteV2 || localStorage.getItem(KEYS.v2)) { var cur = JSON.parse(localStorage.getItem(KEYS.v2) || 'null'); if (!cur || !cur.migration || cur.migration.migrationId === migrationId) localStorage.removeItem(KEYS.v2); } } catch (e) { /* nada */ }
+      try { if (wroteV2) { var cur = JSON.parse(localStorage.getItem(KEYS.v2) || 'null'); if (cur && cur.migration && cur.migration.migrationId === migrationId) localStorage.removeItem(KEYS.v2); } } catch (e) { /* nada: em dúvida, não se apaga */ }
       try { if (wroteImages) localStorage.removeItem(KEYS.images); } catch (e) { /* nada */ }
       var info = { at: new Date().toISOString(), step: err.step || step, message: err.message };
       var schemaNow = readSchema();
@@ -365,7 +477,19 @@
       var busy = (q.held || []).some(function (l) { return l.name === 'dailymed-migration'; });
       if (busy) return false;
       var cur = readSchema(); if (cur.status !== 'migrating') return false;
-      try { var v2 = JSON.parse(localStorage.getItem(KEYS.v2) || 'null'); if (v2) localStorage.removeItem(KEYS.v2); } catch (e) { localStorage.removeItem(KEYS.v2); }
+      var v2raw = localStorage.getItem(KEYS.v2);
+      if (v2raw !== null) {
+        var v2 = null; try { v2 = JSON.parse(v2raw); } catch (e) { v2 = null; }
+        var ours = v2 && v2.migration && cur.migrationId && v2.migration.migrationId === cur.migrationId;
+        if (!ours) {
+          // Dados v2 que não foram criados por esta migração: não se apagam nem se substituem. Fica em recuperação.
+          S.loadedStatus = 'damaged'; S.damagedReadable = false; S.notices.damaged = 'migrating_with_foreign_v2';
+          diagnostics({ at: new Date().toISOString(), type: 'recovery_refused', reason: 'migrating_with_foreign_v2', migrationId: cur.migrationId || null });
+          emit('damaged', 'migrating_with_foreign_v2');
+          return false;
+        }
+        localStorage.removeItem(KEYS.v2); // resultado parcial desta migração (as chaves v1 e a cópia de segurança ficam)
+      }
       localStorage.removeItem(KEYS.images);
       localStorage.removeItem(KEYS.probe);
       writeSchemaDirect({ status: 'v1', recoveredAt: new Date().toISOString(), lastError: { step: 'interrompida', message: 'A atualização anterior foi interrompida.' }, backupKey: cur.migrationId ? BACKUP_PREFIX + cur.migrationId : null });
@@ -377,9 +501,39 @@
     });
   }
 
+  /**
+   * Reparação explícita do marcador, pedida pelo utente no ecrã de recuperação. Nunca apaga nem altera dados:
+   * só regrava dailymed_schema (guardando o marcador anterior em previousMarker).
+   *  - 'reactivate_v2': só se dailymed_v2 existe e passa todas as verificações.
+   *  - 'mark_v1': só se NÃO existem dados v2 (marcador ilegível ou "v2 sem dados").
+   */
+  function repairMarker(action) {
+    if (!hasLocks) return Promise.reject(stepError('locks', 'Este browser não permite fazer a reparação com segurança.'));
+    if (!S.isWriter) return Promise.reject(stepError('writer', 'A DailyMed está aberta noutro separador. Usa só um separador.'));
+    return navigator.locks.request('dailymed-migration', { mode: 'exclusive', ifAvailable: true }, function (lock) {
+      if (!lock) throw stepError('busy', 'Está a decorrer outra operação de dados.');
+      var a = assessInstallation();
+      if (a.status !== 'damaged') throw stepError('not_damaged', 'Os dados não estão em recuperação.');
+      var prevRaw = null; try { prevRaw = localStorage.getItem(KEYS.schema); } catch (e) { prevRaw = null; }
+      var base = { repairedAt: new Date().toISOString(), repairedFrom: a.reason, previousMarker: prevRaw };
+      if (action === 'reactivate_v2') {
+        if (!a.v2Valid) throw stepError('v2_invalid', 'Os dados da versão 2 não passaram a verificação. Não é possível reativá-los.');
+        var st = JSON.parse(localStorage.getItem(KEYS.v2));
+        base.status = 'v2'; base.migrationId = st.migration ? st.migration.migrationId : null;
+      } else if (action === 'mark_v1') {
+        if (a.hasV2) throw stepError('v2_exists', 'Existem dados da versão 2: não é possível voltar à versão 1 sem os perder.');
+        base.status = 'v1';
+      } else throw stepError('action', 'Ação desconhecida.');
+      writeSchemaDirect(base);
+      diagnostics({ at: base.repairedAt, type: 'marker_repaired', action: action, from: a.reason });
+      if (channel) channel.postMessage({ type: 'schema-changed' });
+      return { ok: true, status: base.status };
+    });
+  }
+
   function onBecameWriter() {
     recoverIfInterrupted().then(function () {
-      if (mode() === 'v2') { cleanupOrphanImages(); return checkExternalV1(); }
+      if (mode() === 'v2' && S.loadedStatus === 'v2') { cleanupOrphanImages(); checkSharedKeys(); return checkExternalV1(); }
     }).catch(function (e) { if (global.console) console.error(e); });
   }
 
@@ -414,35 +568,36 @@
 
   // ---------- arranque ----------
   function init() {
-    var s = readSchema();
-    S.loadedStatus = s.status === 'v2' ? 'v2' : (s.status === 'migrating' ? 'migrating' : 'v1');
-    if (S.loadedStatus === 'v2' && !localStorage.getItem(KEYS.v2)) {
-      // Estado incoerente: marcador v2 sem dados. Não se trata como migração concluída.
-      S.loadedStatus = 'invalid';
-      S.notices.invalid = true;
+    var a = assessInstallation();
+    S.loadedStatus = a.status;
+    if (a.status === 'damaged') {
+      // Recuperação: nada é gravado, nada é migrado. Se os dados v2 estiverem legíveis e válidos, são mostrados (só leitura).
+      S.damagedReadable = a.v2Valid;
+      S.notices.damaged = a.reason;
     }
     global.addEventListener('storage', function (ev) {
       if (ev.storageArea && ev.storageArea !== localStorage) return;
       if (ev.key === KEYS.schema || ev.key === null) checkSchemaChange();
       if (ev.key === KEYS.v2 || ev.key === null) { S.v2cache = null; emit('data', 'external'); }
-      if (mode() === 'v2' && V1_MED_KEYS.indexOf(ev.key) !== -1) checkExternalV1();
+      if (mode() === 'v2' && EXTERNAL_MED_KEYS.indexOf(ev.key) !== -1) checkExternalV1();
+      if (mode() === 'v2' && (SHARED_KEYS.indexOf(ev.key) !== -1 || ev.key === null)) checkSharedKeys();
     });
     electWriter();
   }
 
   function status() {
-    return { loadedStatus: S.loadedStatus, persisted: readSchema(), mode: mode(), isWriter: S.isWriter, hasLocks: hasLocks,
+    return { loadedStatus: S.loadedStatus, persisted: readSchema(), effective: effectiveStatus(), mode: mode(), isWriter: S.isWriter, hasLocks: hasLocks,
       blockReason: writeBlockReason(), notices: S.notices, tabId: tabId };
   }
   function dismissNotice(name) { delete S.notices[name]; emit('notice', name); }
 
   global.DMStore = {
-    APP_VERSION: APP_VERSION, KEYS: KEYS, V1_MED_KEYS: V1_MED_KEYS,
+    APP_VERSION: APP_VERSION, KEYS: KEYS, V1_MED_KEYS: V1_MED_KEYS, EXTERNAL_MED_KEYS: EXTERNAL_MED_KEYS, SHARED_KEYS: SHARED_KEYS, checkSharedKeys: checkSharedKeys,
     init: init, mode: mode, status: status, canWrite: canWrite, writeBlockReason: writeBlockReason, onChange: onChange,
     writeRaw: writeRaw, getV2: getV2, applyV2: applyV2, newOperationId: newOperationId,
     getImage: getImage, putImage: putImage, cleanupOrphanImages: cleanupOrphanImages,
     preflight: preflight, migrate: migrate, recoverIfInterrupted: recoverIfInterrupted, checkExternalV1: checkExternalV1,
     requestHandover: requestHandover, downloadExport: downloadExport, buildExport: buildExport, dismissNotice: dismissNotice,
-    backupKeys: backupKeys, readSchema: readSchema,
+    backupKeys: backupKeys, readSchema: readSchema, assessInstallation: assessInstallation, effectiveStatus: effectiveStatus, repairMarker: repairMarker,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

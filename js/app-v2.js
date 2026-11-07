@@ -40,6 +40,9 @@ var V2UI = (function () {
     unknown_time: 'Este horário já não existe no lembrete.',
     invalid_medication: 'Preenche pelo menos o nome do medicamento.',
     image_not_saved: 'Não foi possível guardar a fotografia.',
+    unit_locked: 'A unidade não pode ser alterada depois de haver movimentos de stock (a app não converte unidades).',
+    amount_change_needs_confirmation: 'Confirma a nova quantidade por toma (só vale para as tomas a partir de agora).',
+    invalid_date: 'Data inválida.',
   };
 
   function isV2() { return DMStore.mode() === 'v2'; }
@@ -62,6 +65,17 @@ var V2UI = (function () {
     return false;
   }
 
+  var DAMAGED_MSG = {
+    schema_missing_with_v2: 'O marcador de versão desapareceu, mas existem dados da versão 2.',
+    schema_corrupt_with_v2: 'O marcador de versão está danificado e existem dados da versão 2.',
+    schema_corrupt: 'O marcador de versão está danificado.',
+    v1_with_v2_data: 'O marcador indica a versão 1, mas existem dados da versão 2.',
+    v2_without_data: 'O marcador indica a versão 2, mas os dados da versão 2 não existem.',
+    v2_corrupt: 'Os dados da versão 2 estão danificados ou incompletos.',
+    migrating_with_foreign_v2: 'Uma atualização interrompida encontrou dados da versão 2 que não foram criados por ela.',
+    default: 'Os dados estão num estado incoerente.',
+  };
+
   // ---------- avisos de compatibilidade ----------
   function banners() {
     var s = DMStore.status(), out = [];
@@ -77,10 +91,14 @@ var V2UI = (function () {
     } else if (s.blockReason === 'no_locks') {
       b('warning', 'Este browser não permite registar com segurança. Podes consultar e exportar os teus dados.');
     }
-    if (s.notices.invalid) b('danger', 'Os dados estão num estado incoerente (versão 2 sem dados). Nada foi alterado. Exporta uma cópia em Definições e contacta o apoio.');
+    if (s.loadedStatus === 'damaged' || s.notices.damaged) {
+      b('danger', esc(DAMAGED_MSG[s.notices.damaged] || DAMAGED_MSG.default) + ' Para proteger os teus dados, a app está só de leitura: nada vai ser atualizado, apagado ou substituído.',
+        '<a href="#atualizar-dados" class="dm-banner-btn" id="link-recovery">Ver recuperação</a>');
+    }
     if (s.notices.recovered) b('warning', 'A atualização anterior foi interrompida. Os teus dados antigos estão intactos e a app continua na versão anterior.',
       '<button type="button" class="dm-banner-btn" data-action="dismiss" data-notice="recovered">Fechar</button>');
     if (s.notices.external) b('warning', esc(s.notices.external), '<button type="button" class="dm-banner-btn" data-action="dismiss" data-notice="external">Fechar</button>');
+    if (s.notices.sharedExternal) b('warning', esc(s.notices.sharedExternal), '<button type="button" class="dm-banner-btn" data-action="dismiss" data-notice="sharedExternal">Fechar</button>');
     return out.length ? '<div id="dm-banners" class="dm-banners">' + out.join('') + '</div>' : '<div id="dm-banners"></div>';
   }
   function refreshBanners() {
@@ -236,8 +254,12 @@ var V2UI = (function () {
         form('count', 'Contagem física', 'countedQuantity', 'Quantidade que contaste agora', '<label class="flex items-center gap-2 mt-2 text-sm"><input type="checkbox" name="confirmed" required /> Confirmo que contei agora todas as unidades.</label>') +
         '<button type="button" class="btn-outline w-full" data-action="stock-confirm" data-med="' + esc(medId) + '" data-op="' + oid() + '">O saldo está certo (confirmar)</button>' +
         '<details class="stock-op"><summary>Unidade e quantidade por toma</summary><form class="stock-form" data-kind="settings" data-med="' + esc(medId) + '" data-op="' + oid() + '">' +
-        '<label class="med-form-label">Unidade</label><select name="unit" class="w-full px-4 py-2.5 input-outline">' + DailyMedV2.UNITS.map(function (u) { return '<option value="' + u + '"' + (u === cfg.unit ? ' selected' : '') + '>' + u + '</option>'; }).join('') + '</select>' +
-        '<label class="med-form-label mt-2">Quantidade por toma</label><input name="amountPerDose" type="number" step="0.01" min="0.01" required value="' + esc(cfg.amountPerDose) + '" class="w-full px-4 py-2.5 input-outline" />' +
+        '<label class="med-form-label">Unidade</label><input type="hidden" name="unit" value="' + esc(cfg.unit) + '" />' +
+        '<p class="text-sm" id="stock-unit-locked"><strong>' + esc(cfg.unit) + '</strong> — a unidade não pode ser alterada: o saldo e todos os movimentos já registados estão em ' + esc(cfg.unit) + ' e a app não converte unidades. Se passares a contar noutra unidade, regista uma contagem física na unidade atual.</p>' +
+        '<label class="med-form-label mt-2">Quantidade por toma (' + esc(cfg.unit) + ')</label><input name="amountPerDose" type="number" step="0.01" min="0.01" required value="' + esc(cfg.amountPerDose) + '" class="w-full px-4 py-2.5 input-outline" />' +
+        '<p class="text-sm mt-1">Mudar a quantidade por toma só vale para as tomas registadas a partir de agora. As tomas já registadas e os movimentos antigos ficam com os valores originais, e a alteração fica registada.</p>' +
+        '<label class="flex items-center gap-2 mt-2 text-sm"><input type="checkbox" name="confirmAmountChange" /> Confirmo a nova quantidade por toma.</label>' +
+        (cfg.changes && cfg.changes.length ? '<ul class="text-sm mt-2" id="stock-config-changes">' + cfg.changes.map(function (ch) { return '<li>' + esc(fmtDateTime(ch.at)) + ': quantidade por toma ' + num(ch.from) + ' → ' + num(ch.to) + '</li>'; }).join('') + '</ul>' : '') +
         '<button type="submit" class="btn-primary w-full mt-2">Guardar</button></form></details>' +
         '</section>';
     }
@@ -289,8 +311,41 @@ var V2UI = (function () {
 
   // ---------- atualização dos dados (migração explícita) ----------
   var migrationUi = { running: false, log: [], result: null, error: null };
+  function viewRecovery(s) {
+    var a = DMStore.assessInstallation();
+    var c = a.counts;
+    var canAct = s.hasLocks && s.isWriter;
+    var reason = s.notices.damaged || a.reason;
+    return pageHeader('Recuperação dos dados', '#definicoes') + '<main class="app-main space-y-4 bg-white" id="recovery">' +
+      '<section class="med-detail-card"><h4 class="med-detail-title">O que se passa</h4>' +
+      '<p class="text-sm" id="recovery-reason" data-reason="' + esc(reason) + '">' + esc(DAMAGED_MSG[reason] || DAMAGED_MSG.default) + '</p>' +
+      '<p class="text-sm mt-2">A app não vai fazer a atualização nem gravar nada enquanto isto não for resolvido. Os dados antigos e os dados da versão 2 continuam guardados.</p></section>' +
+      '<section class="med-detail-card"><h4 class="med-detail-title">Dados da versão 2 encontrados</h4>' +
+      (a.hasV2 ? (a.v2Valid ? '<p class="text-sm" id="recovery-v2">' + c.medications + ' medicamentos · ' + c.reminders + ' lembretes · ' + c.doseRecords + ' registos de toma · ' + c.stockMovements + ' movimentos de stock' + (a.lastActivity ? ' · última alteração em ' + esc(fmtDateTime(a.lastActivity)) : '') + '. Passam todas as verificações.</p>'
+        : '<p class="text-sm" id="recovery-v2">Existem, mas não passam as verificações (' + esc(a.v2Errors.join('; ')) + '). Não podem ser reativados automaticamente.</p>')
+        : '<p class="text-sm" id="recovery-v2">Nenhum.</p>') + '</section>' +
+      '<button type="button" class="btn-outline w-full" data-action="export">1. Descarregar cópia de tudo (recomendado)</button>' +
+      (!canAct ? '<p class="dm-banner dm-banner--warning">' + (s.hasLocks ? 'Fecha os outros separadores da DailyMed (ou toca em "Usar este separador") para poderes reparar.' : 'Este browser não permite reparar com segurança. Exporta a cópia e abre a DailyMed num browser atualizado.') + '</p>' : '') +
+      (a.v2Valid ? '<button type="button" class="btn-primary w-full" id="btn-repair-v2" data-action="repair" data-repair="reactivate_v2"' + (canAct ? '' : ' disabled') + '>2. Continuar com estes dados da versão 2</button>' +
+        '<p class="text-sm">Só regrava o marcador de versão. Não apaga nem altera nenhum dado. Se usaste uma versão antiga da app depois desta data, essas alterações não estão nestes dados.</p>' : '') +
+      (!a.hasV2 ? '<button type="button" class="btn-primary w-full" id="btn-repair-v1" data-action="repair" data-repair="mark_v1"' + (canAct ? '' : ' disabled') + '>2. Continuar com os dados da versão 1</button>' +
+        '<p class="text-sm">Não existem dados da versão 2 para proteger. Só regrava o marcador de versão; os dados antigos ficam como estão.</p>' : '') +
+      (a.hasV2 && !a.v2Valid ? '<p class="text-sm">Guarda a cópia e pede ajuda. Não tentes atualizar outra vez: a app não vai substituir estes dados.</p>' : '') +
+      (recoveryUi.error ? '<p class="dm-banner dm-banner--danger" id="repair-error">' + esc(recoveryUi.error) + '</p>' : '') +
+      '</main>';
+  }
+  var recoveryUi = { error: null };
+  function runRepairFromUi(action) {
+    var txt = action === 'reactivate_v2' ? 'Vamos continuar com os dados da versão 2 que estão neste browser. Nada é apagado. Continuar?'
+      : 'Vamos continuar com os dados da versão 1. Nada é apagado. Continuar?';
+    if (!confirm(txt)) return;
+    DMStore.repairMarker(action).then(function () { location.reload(); })
+      .catch(function (e) { recoveryUi.error = e.message; runRoute(); });
+  }
+
   function viewMigration() {
     var s = DMStore.status();
+    if (s.loadedStatus === 'damaged') return viewRecovery(s);
     if (s.mode === 'v2' && migrationUi.result) {
       var cc = migrationUi.result.report.counts;
       return pageHeader('Atualizar os dados', '#home') + '<main class="app-main space-y-4 bg-white"><div class="dm-banner dm-banner--ok" id="migration-ok"><p>Atualização concluída: ' + cc.medications + ' medicamentos, ' + cc.reminders + ' lembretes e ' + cc.legacy + ' registos antigos (não confirmados). ' + (cc.imagesRejected ? cc.imagesRejected + ' fotografia(s) inválida(s) não foram copiadas. ' : '') + 'Os dados antigos ficaram guardados.</p><button type="button" class="dm-banner-btn" data-action="reload">Abrir a nova versão</button></div></main>';
@@ -337,12 +392,13 @@ var V2UI = (function () {
 
   function dataSection() {
     var s = DMStore.status();
-    var modeTxt = s.mode === 'v2' ? 'Versão 2 (tomas por horário e stock por movimentos)' : 'Versão 1';
+    var modeTxt = s.loadedStatus === 'damaged' ? 'Em recuperação (só leitura)' : (s.mode === 'v2' ? 'Versão 2 (tomas por horário e stock por movimentos)' : 'Versão 1');
     var writer = s.blockReason ? 'Só de leitura' : 'Pode gravar';
     return '<section class="p-4 rounded-xl border border-gray-200 space-y-2" id="data-section"><p class="font-medium text-black">Dados</p>' +
       '<p class="text-sm" id="data-mode">' + esc(modeTxt) + '</p><p class="text-sm" id="data-writer">Este separador: ' + esc(writer) + '</p>' +
       '<button type="button" class="btn-outline w-full" data-action="export">Descarregar cópia dos dados</button>' +
-      (s.mode === 'v1' ? '<a href="#atualizar-dados" class="btn-primary w-full" id="link-migrate">Atualizar para a versão 2</a>' : '') + '</section>';
+      (s.loadedStatus === 'damaged' ? '<a href="#atualizar-dados" class="btn-primary w-full" id="link-recovery-settings">Recuperação dos dados</a>'
+        : (s.mode === 'v1' ? '<a href="#atualizar-dados" class="btn-primary w-full" id="link-migrate">Atualizar para a versão 2</a>' : '')) + '</section>';
   }
 
   // ---------- ações ----------
@@ -370,6 +426,7 @@ var V2UI = (function () {
       return;
     }
     if (a === 'migrate') { runMigrationFromUi(); return; }
+    if (a === 'repair') { runRepairFromUi(el.dataset.repair); return; }
     if (!isV2()) return;
     el.disabled = true;
     var res;
@@ -420,7 +477,7 @@ var V2UI = (function () {
         res = DMStore.applyV2({ operationId: opId, type: 'stock_adjustment', medicationId: med, newQuantity: Number(fd.get('newQuantity')) }); msg = 'Stock ajustado.';
       }
       else if (kind === 'count') { res = DMStore.applyV2({ operationId: opId, type: 'stock_count', medicationId: med, countedQuantity: Number(fd.get('countedQuantity')) }); msg = 'Contagem registada.'; }
-      else if (kind === 'settings') { res = DMStore.applyV2({ operationId: opId, type: 'stock_config', medicationId: med, unit: fd.get('unit'), amountPerDose: Number(fd.get('amountPerDose')) }); msg = 'Configuração guardada.'; }
+      else if (kind === 'settings') { res = DMStore.applyV2({ operationId: opId, type: 'stock_config', medicationId: med, unit: fd.get('unit'), amountPerDose: Number(fd.get('amountPerDose')), confirmAmountChange: fd.get('confirmAmountChange') === 'on' }); msg = 'Quantidade por toma atualizada.'; }
       else return false;
     }
     report(res, msg);
@@ -431,7 +488,9 @@ var V2UI = (function () {
 
   function onStoreEvent(kind, detail) {
     if (kind === 'writer' || kind === 'outdated' || kind === 'notice' || kind === 'external') refreshBanners();
-    if (kind === 'recovered') runRoute();
+    // O ecrã de atualização/recuperação depende de este separador poder gravar: redesenha quando isso muda.
+    if (kind === 'writer' && /^#atualizar-dados/.test(location.hash)) runRoute();
+    if (kind === 'recovered' || kind === 'damaged') runRoute();
     if (kind === 'blocked') { var now = Date.now(); if (!onStoreEvent._t || now - onStoreEvent._t > 4000) { onStoreEvent._t = now; showToast('Este separador não pode gravar agora. Vê o aviso no topo.', 'lock'); } refreshBanners(); }
     if (kind === 'storage_error') showToast('Não foi possível guardar: o armazenamento do browser recusou a gravação.', 'error');
     if (kind === 'data' && detail === 'external') {

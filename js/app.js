@@ -590,7 +590,7 @@ function viewHome() {
     '<p class="next-step-text">' + nextLabel + '</p>' +
     (nextReminder ? '<a href="#lembretes" class="next-step-cta">Ver lembretes</a>' : '') +
     '</section>' +
-    (DMStore.status().persisted.status === 'v1' ? '<a href="#atualizar-dados" class="summary-card" id="card-migrate"><div><p class="summary-title">Nova versão dos dados</p><p class="summary-sub">Tomas por horário e stock por movimentos. Saber mais e atualizar</p></div><span class="material-icons">upgrade</span></a>' : '') +
+    (DMStore.status().loadedStatus === 'v1' && DMStore.effectiveStatus() === 'v1' ? '<a href="#atualizar-dados" class="summary-card" id="card-migrate"><div><p class="summary-title">Nova versão dos dados</p><p class="summary-sub">Tomas por horário e stock por movimentos. Saber mais e atualizar</p></div><span class="material-icons">upgrade</span></a>' : '') +
     '<section class="home-secondary-footer space-y-2">' +
     '<p class="section-label">Configurações</p>' +
     '<div class="grid grid-cols-1 gap-2">' +
